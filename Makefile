@@ -33,6 +33,12 @@ AUTH_SRC = $(subst src/inject.c,src/authtest.c,$(INJ_SRC))
 build/authtest: $(AUTH_SRC) src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(AUTH_SRC) $(LIBS)
 
+INJTEST_SRC = $(subst src/inject.c,src/injtest.c,$(INJ_SRC))
+build/injtest: $(INJTEST_SRC) src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+	$(CC) $(CFLAGS) -o $@ $(INJTEST_SRC) $(LIBS)
+.PHONY: injtest
+injtest: build/injtest
+
 STA_SRC = $(subst src/inject.c,src/sta.c src/staconn.c,$(INJ_SRC))
 build/staconn: $(STA_SRC) src/sta.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(STA_SRC) $(LIBS)
@@ -56,3 +62,7 @@ build/wifi: $(WIFI_SRC) src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/ph
 	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
 .PHONY: wifi
 wifi: build/wifi
+
+usbchime: build/usbchime
+build/usbchime: src/usbchime.c | build
+	$(CC) $(CFLAGS) -o $@ src/usbchime.c $(LIBS)
