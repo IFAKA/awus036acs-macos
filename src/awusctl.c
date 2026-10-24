@@ -26,6 +26,7 @@
 #include "country.h"
 #include "proto.h"
 #include "link.h"
+#include "bench.h"
 
 static FILE *E;                  // user-facing messages; in direct mode stderr itself is redirected to the register log
 
@@ -190,6 +191,22 @@ static int cmd_scan_direct(const char *band_s, int dwell, int passes, int json, 
 static volatile sig_atomic_t stop_req;
 static void on_sig(int s) { (void)s; stop_req = 1; }
 
+static int g_bench, g_bench_secs = 5, g_legacy;
+static const char *g_bench_down = "10,20,40,80";
+
+static void bench_report(link_t *L, uint32_t peer)
+{
+    bench_res_t r;
+    fprintf(E, "bench peer=%u.%u.%u.%u secs=%d rates: data tx code %d, last rx code %d\n", peer >> 24, (peer >> 16) & 255, (peer >> 8) & 255, peer & 255, g_bench_secs, L->data_rate, L->s.rx_rate);
+    if (!bench_run(L, peer, 1, g_bench_secs, 1400, 0, &r))
+        fprintf(E, "BENCH up   %7.2f Mbit/s  sent %lu recv %lu loss %ld%%  tx_report ok %lu retry_over %lu of %lu  rx_rate %d\n", r.mbps, r.sent, r.recv, r.sent ? (long)(100 - 100 * r.recv / r.sent) : 100, r.tx_ok, r.tx_retry_over, r.tx_submitted, r.rx_rate);
+    char *d = strdup(g_bench_down), *sv, *tok;
+    for (tok = strtok_r(d, ",", &sv); tok; tok = strtok_r(NULL, ",", &sv))
+        if (!bench_run(L, peer, 2, g_bench_secs, 1400, atoi(tok), &r))
+            fprintf(E, "BENCH down offered %4s -> %7.2f Mbit/s  sent %lu recv %lu loss %ld%%  rx_rate %d bw %d\n", tok, r.mbps, r.sent, r.recv, r.sent ? (long)(100 - 100 * (long)r.recv / (long)r.sent) : 100, r.rx_rate, 0);
+    free(d);
+}
+
 static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hidden, const char *sec_s, const char *key_env, int keyid)
 {
     uint8_t bssid[6]; int have_b = 0;
@@ -228,12 +245,16 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
     char ips[20], gws[20];
     link_ipstr(ips, sizeof ips, L.n.lease.ip); link_ipstr(gws, sizeof gws, L.n.lease.gw);
     link_ping_t pr;
-    int prc = link_ping(&L, L.n.lease.gw, 6, &pr);
+    int prc = link_ping(&L, L.n.lease.gw, g_bench ? 20 : 6, &pr);
     if (prc) { fprintf(E, "join FAIL ping %s (ip=%s gw=%s)\n", prc > 0 ? "no_reply_to_first_echo" : "deauthenticated_or_stopped", ips, gws); goto out; }
     fprintf(E, "join OK sec=%s pairwise=%s group=%s ch=%d ip=%s gw=%s ping %d/%d loss %d%% avg_rtt %ldms\n",
             link_sec_str(L.sec), link_cipher_str(L.pw_cipher), link_cipher_str(L.grp_cipher), L.s.channel, ips, gws,
             pr.recv, pr.sent, pr.sent ? 100 - 100 * pr.recv / pr.sent : 100, pr.avg_rtt_ms);
     rc = pr.recv == pr.sent ? 0 : 3;
+    if (g_bench) {
+        uint32_t peer = bench_find_peer(L.n.lease.ip, L.n.lease.mask);
+        if (!peer) fprintf(E, "bench: no local interface on the lease subnet\n"); else bench_report(&L, peer);
+    }
 out:
     if (L.s.associated) link_leave(&L);
     rtl_close(&r);
@@ -249,6 +270,7 @@ static int usage(FILE *o)
 "  scan [--band 2|5|all] [--dwell MS] [--passes N] [--json] [--country CC (direct mode)]\n"
 "  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|auto] [--key-env VAR]\n"
 "       [--wep-keyid N] [--default-route]     with the daemon: connect and stay; without: join, ping 6x, leave\n"
+"  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates]   goodput test (no daemon)\n"
 "  leave                          disconnect and stop auto-join until join / autojoin on / profile add\n"
 "  ping [--host IP] [--count N]   ping the gateway (or IP) from the daemon's link\n"
 "  rf on|off                      radio on/off (off: deauth, RF block disabled, LED off)\n"
@@ -295,6 +317,9 @@ int main(int argc, char **argv)
         else if (OPT("--priority")) { prio = atoi(argv[++i]); have_prio = 1; }
         else if (OPT("--wep-keyid")) keyid = atoi(argv[++i]);
         else if (OPT("--sock")) snprintf(sockpath, sizeof sockpath, "%s", argv[++i]);
+        else if (OPT("--secs")) g_bench_secs = atoi(argv[++i]);
+        else if (OPT("--down")) g_bench_down = argv[++i];
+        else if (!strcmp(a, "--legacy-rates")) g_legacy = 1;
         else if (!strcmp(a, "--hidden")) hidden = 1;
         else if (!strcmp(a, "--json")) json = 1;
         else if (!strcmp(a, "--no-autojoin")) noauto = 1;
@@ -343,6 +368,13 @@ int main(int argc, char **argv)
             free(b); free(resp);
             return 0;
         }
+        return cmd_join_direct(ssid, bssid, ch, hidden, sec, key_env, keyid);
+    }
+    if (!strcmp(cmd, "bench")) {       // direct-mode join + goodput measurement, then leave
+        if (!ssid || !*ssid || strlen(ssid) > 32) { fprintf(E, "awusctl bench: --ssid S is required\n"); return 2; }
+        char *x = rpc("status");
+        if (x) { free(x); fprintf(E, "awusctl bench: awusd is running; stop it first (bench drives the USB device itself)\n"); return 2; }
+        g_bench = 1;
         return cmd_join_direct(ssid, bssid, ch, hidden, sec, key_env, keyid);
     }
     if (!strcmp(cmd, "profile")) {

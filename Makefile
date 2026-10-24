@@ -84,14 +84,14 @@ build/test_awusd: $(AWUSD_PURE) src/country.h src/profile.h src/proto.h src/led.
 .PHONY: test-awusd
 test-awusd: build/test_awusd
 	./build/test_awusd
-build/test_bench: src/bench.c src/bench.h src/test_bench.c src/net.c src/net.h src/link.h | build
-	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(shell pkg-config --cflags libusb-1.0) -o $@ src/bench.c src/net.c src/tx_stub_bench.c src/test_bench.c
+build/test_bench: src/benchutil.c src/bench.h src/test_bench.c src/net.c src/net.h src/link.h | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(shell pkg-config --cflags libusb-1.0) -o $@ src/benchutil.c src/net.c src/test_bench.c
 .PHONY: test-bench
 test-bench: build/test_bench
 	./build/test_bench
 test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench
 
-AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/scanlib.c src/country.c src/proto.c src/scanparse.c src/sta.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/country.c src/proto.c src/scanparse.c src/sta.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
 build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSCTL_SRC) $(LIBS)
 .PHONY: awusctl

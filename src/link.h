@@ -60,6 +60,9 @@ typedef struct link {
     // tun bridge (optional)
     int tun_fd;
     unsigned long st_tun_rx, st_tun_tx, st_tun_drop;
+    // optional hook for UDP datagrams addressed to us when there is no tun (used by the bench)
+    void (*udp_rx)(void *ud, uint16_t dport, const uint8_t *payload, size_t n, uint32_t seq, uint32_t src);
+    void *udp_ud;
     // statistics
     unsigned long st_dec_fail, st_replay, st_dec_ok, st_tx_enc, st_clear_drop, st_no_key;
     // internals (exposed so the CLI tools can print them)

@@ -225,6 +225,14 @@ static void ops_to_tun(void *ctx, const uint8_t *p, size_t len)
     }
     if (len < 28 || (p[0] >> 4) != 4) return;
     int ihl = (p[0] & 15) * 4;
+    if (p[9] == 17 && l->udp_rx && (size_t)ihl + 8 <= len) {      // bench hook: UDP datagram for us
+        size_t ul = (size_t)p[ihl + 4] << 8 | p[ihl + 5];
+        if (ul < 8 || ul - 8 > len - ihl - 8) return;
+        size_t pl = ul - 8;
+        uint32_t seq = pl >= 4 ? (uint32_t)p[ihl + 8] << 24 | p[ihl + 9] << 16 | p[ihl + 10] << 8 | p[ihl + 11] : 0;
+        l->udp_rx(l->udp_ud, p[ihl + 2] << 8 | p[ihl + 3], p + ihl + 8, pl, seq, (uint32_t)p[12] << 24 | p[13] << 16 | p[14] << 8 | p[15]);
+        return;
+    }
     if (p[9] != 1 || (size_t)ihl + 8 > len) return;
     const uint8_t *ic = p + ihl;
     if (ic[0] != 0) return;
