@@ -46,6 +46,9 @@
 
 typedef enum { B_NONE, B_SCAN, B_JOIN, B_OTHER } busy_t;
 typedef enum { ST_NO_DEVICE, ST_IDLE, ST_SCANNING, ST_JOINING, ST_CONNECTED, ST_RF_OFF } state_t;
+#ifndef AWUSD_VERSION
+#define AWUSD_VERSION "0.1.0"
+#endif
 static const char *const state_name[] = { "NO_DEVICE", "IDLE", "SCANNING", "JOINING", "CONNECTED", "RF_OFF" };
 
 typedef struct {                  // a connection we want (and remember for reconnects)
@@ -423,6 +426,7 @@ static void cmd_status(FILE *o)
     long now = now_ms();
     fprintf(o, "OK\n");
     kv(o, "state", "%s", state_name[st]);
+    kv(o, "version", "%s", AWUSD_VERSION);
     kv(o, "device", "%s", D.dev ? "present" : "absent");
     kv(o, "rf", "%s", D.rf_off ? "off" : "on");
     kv(o, "country", "%s", D.country);
@@ -542,7 +546,7 @@ static void profile_from_req(const proto_req_t *q, profile_t *p, int *auto_given
 static void cmd_profile(FILE *o, const proto_req_t *q)
 {
     const char *sub = proto_pos(q, 0);
-    if (!sub) { err(o, "usage: profile add|list|remove"); return; }
+    if (!sub) { err(o, "usage: profile add|list|remove|autojoin"); return; }
     if (!strcmp(sub, "list")) {
         fprintf(o, "OK\n");
         for (int i = 0; i < D.profiles.n; i++) {
@@ -564,6 +568,18 @@ static void cmd_profile(FILE *o, const proto_req_t *q)
         if (profiles_save(D.profiles_path, &D.profiles)) { err(o, "saved in memory but writing %s failed", D.profiles_path); return; }
         if (p.autojoin) { D.hold = 0; D.autojoin_on = 1; D.attempt = 0; D.next_try = 0; }
         LOGF("profile saved: %s (autojoin=%d prio=%d)", p.ssid, p.autojoin, p.priority);
+        fprintf(o, "OK\n");
+        return;
+    }
+    if (!strcmp(sub, "autojoin")) {      // profile autojoin ssid=NAME on|off : flips the flag, keeps the key
+        const char *s = proto_opt(q, "ssid"), *onoff = proto_pos(q, 1);
+        profile_t *pp = NULL;
+        for (int i = 0; s && i < D.profiles.n; i++) if (!strcmp(D.profiles.p[i].ssid, s)) pp = &D.profiles.p[i];
+        if (!pp || !onoff || (strcmp(onoff, "on") && strcmp(onoff, "off"))) { err(o, "usage: profile autojoin ssid=NAME on|off"); return; }
+        pp->autojoin = !strcmp(onoff, "on");
+        if (profiles_save(D.profiles_path, &D.profiles)) { err(o, "saved in memory but writing %s failed", D.profiles_path); return; }
+        if (pp->autojoin) { D.hold = 0; D.attempt = 0; D.next_try = 0; }
+        LOGF("profile %s autojoin=%d", pp->ssid, pp->autojoin);
         fprintf(o, "OK\n");
         return;
     }
