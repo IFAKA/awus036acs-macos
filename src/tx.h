@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // USB TX path (injection): 40-byte TX descriptor + 802.11 frame on a bulk OUT endpoint.
 // Ported from rtl8812au_xmit.c update_txdesc (MGNT_FRAMETAG branch) and rtl8812a_cal_txdesc_chksum.
 #ifndef TX_H

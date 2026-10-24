@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Injection statistics test (like `aireplay-ng -9`), restricted to the user's own AP only.
-// Sends directed Probe Requests to BSSID aa:bb:cc:dd:ee:ff (SSID MyNetwork) at four rates and counts
+// Sends directed Probe Requests to BSSID the BSSID given on the command line at four rates and counts
 // Probe Responses addressed back to us; also sends ONE broadcast (wildcard SSID) probe and counts distinct
 // APs that answer it (ordinary passive-looking 802.11 behaviour: any AP answers a broadcast probe from anyone).
-// No deauth/disassoc frames exist in this file and none are sent. Only aa:bb:cc:dd:ee:ff is ever a destination.
-//   injtest [-c CHANNEL] [-n COUNT]
+// No deauth/disassoc frames exist in this file and none are sent. Only that BSSID is ever a destination.
+//   injtest --bssid aa:bb:cc:dd:ee:ff --ssid NAME [-c CHANNEL] [-n COUNT]
 // Prints a table and: INJTEST OK 1M=a/30 6M=b/30 24M=c/30 54M=d/30 bcast_aps=N   (OK if best rate >= 80%)
 //                   or INJTEST WEAK ... (same fields) if not.
 // Log: /tmp/injtest.log
@@ -19,8 +23,8 @@
 #include "tx.h"
 #include "bringup.h"
 
-#define TARGET_SSID "MyNetwork"
-static const uint8_t TARGET_BSSID[6] = {0xca, 0x33, 0x74, 0xbe, 0x45, 0x52};
+static const char *TARGET_SSID;
+static uint8_t TARGET_BSSID[6];
 static const uint8_t BCAST[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 static uint8_t sa[6];
@@ -107,6 +111,17 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc) ch = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) n = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--ssid") && i + 1 < argc) TARGET_SSID = argv[++i];
+        else if (!strcmp(argv[i], "--bssid") && i + 1 < argc) {
+            unsigned x[6];
+            if (sscanf(argv[++i], "%x:%x:%x:%x:%x:%x", &x[0], &x[1], &x[2], &x[3], &x[4], &x[5]) == 6)
+                for (int k = 0; k < 6; k++) TARGET_BSSID[k] = (uint8_t)x[k];
+            else TARGET_SSID = NULL;
+        }
+    }
+    if (!TARGET_SSID || !(TARGET_BSSID[0] | TARGET_BSSID[1] | TARGET_BSSID[2] | TARGET_BSSID[3] | TARGET_BSSID[4] | TARGET_BSSID[5])) {
+        fprintf(stderr, "usage: injtest --bssid aa:bb:cc:dd:ee:ff --ssid NAME [-c CH] [-n COUNT]  (your own AP only)\n");
+        return 2;
     }
     rtl_t r = {0};
     if (!freopen("/tmp/injtest.log", "w", stderr)) return 2;

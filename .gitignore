@@ -2,3 +2,5 @@ build/
 ref-rtl8812au/
 chris1111-v18/
 *.pkg
+.DS_Store
+Wireless USB Big Sur Adapter-V18/

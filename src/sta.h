@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // 802.11 station join (probe, open auth, association) and data-frame RX/TX plumbing on top of tx.c / rx.c.
 #ifndef STA_H
 #define STA_H

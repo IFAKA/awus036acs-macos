@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Host test for phy.c / tables.c with a fake register backend (no USB device needed).
 // Build + run (from the project root):
 //   cc -O2 -Wall -I src $(pkg-config --cflags libusb-1.0) -o /tmp/test_phy src/test_phy.c src/phy.c src/mac.c src/tables.c $(pkg-config --libs libusb-1.0) && /tmp/test_phy

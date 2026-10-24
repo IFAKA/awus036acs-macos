@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Stage 5A CLI: join our AP (probe, open auth, association) and watch data frames.
 //   staconn --ssid S [--bssid xx:..] --ch N [--listen SECS]
 // Final line: STAGE5A OK assoc aid=N | STAGE5A FAIL <step> <status/reason>. Log: /tmp/staconn.log

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Stage 4 CLI: bring up the chip, set channel, send crafted 802.11 frames.
 //   inject [-c CH] [--rate N (Mbps, 1 2 5 11 6 9 12 18 24 36 48 54; 5=5.5)] [-n COUNT] [--probe] [-i MS] [--rx SECS] [-v]
 // Prints one final line: STAGE4 OK sent=N  |  STAGE4 FAIL <step> <reason>.  Register log: /tmp/inject.log

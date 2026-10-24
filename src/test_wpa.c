@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 /* test_wpa.c - tests for src/wpa.c. Prints "WPA TEST OK" and exits 0 on success.
  *
  * EXTERNAL PUBLISHED VECTORS (verified against the spec value):

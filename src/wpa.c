@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 /* wpa.c - WPA2-Personal supplicant (RSN/CCMP/PSK) on Apple CommonCrypto. See wpa.h. */
 #include "wpa.h"
 #include <CommonCrypto/CommonCrypto.h>

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Stage 3 CLI: power on, firmware, PHY/MAC init, monitor-mode capture to pcap.
 //   monitor [-c CH] [-t SECONDS] [-o out.pcap] [--hop | --hop5 | --hopall] [-v]
 //   --hop    2.4 GHz channels 1..13

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // USB transport for the RTL8821AU: register access through vendor control transfers.
 //   read : bmRequestType 0xC0, bRequest 0x05, wValue = register address, wIndex = 0
 //   write: bmRequestType 0x40, bRequest 0x05, same wValue/wIndex

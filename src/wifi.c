@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Stage 5B/5C CLI: full WPA2-PSK join (4-way handshake, software CCMP, ARP/DHCP, ICMP ping).
 //   5B (default): join, DHCP, ping. Final line: STAGE5B OK ip=.. gw=.. dns=.. rtt_ms=N | STAGE5B FAIL <step> <reason>.
 //   5C (--tun, needs root): after DHCP, bridge to a utun with host routes only (never the default route).

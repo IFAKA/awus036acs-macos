@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Card-enable power flow for RTL8821A (USB), then the post-power MAC bring-up that
 // rtl8812au_hal_init / _InitPowerOn_8812AU does before firmware download.
 #include "rtl.h"

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 /* tun.h - macOS utun device (PF_SYSTEM / SYSPROTO_CONTROL), IPv4 only.
  * Opening a utun and running tun_configure normally need root. */
 #ifndef TUN_H

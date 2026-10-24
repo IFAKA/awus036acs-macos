@@ -62,7 +62,3 @@ build/wifi: $(WIFI_SRC) src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/ph
 	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
 .PHONY: wifi
 wifi: build/wifi
-
-usbchime: build/usbchime
-build/usbchime: src/usbchime.c | build
-	$(CC) $(CFLAGS) -o $@ src/usbchime.c $(LIBS)

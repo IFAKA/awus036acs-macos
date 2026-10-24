@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Classic pcap, linktype 127 (IEEE802_11_RADIOTAP). Radiotap fields: flags, rate (legacy), channel, dBm signal, MCS (HT).
 #include <string.h>
 #include <sys/time.h>

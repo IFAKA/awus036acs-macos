@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+// Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
+// (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
+// See LICENSE for the full license text.
 // Stage 4 closed-loop check: send an 802.11 Authentication request (open system, seq 1) to our own AP and
 // wait for its Authentication response. A response proves TX reached the air and was understood.
 //   authtest BSSID CHANNEL   (e.g. authtest aa:bb:cc:dd:ee:ff 7)
