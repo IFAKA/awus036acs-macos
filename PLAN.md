@@ -31,3 +31,33 @@ Goal: use the adapter natively on this Mac (no VM).
   Unverified still: 5G TX/injection (only RX tested), 40/80 MHz bandwidth, DFS CAC/radar-detect behavior (we only listen passively there).
 - 2026-10-25 injection statistics DONE: new build/injtest (src/injtest.c) sends directed Probe Requests (SSID MyNetwork, random locally-administered SA, DA=BSSID=aa:bb:cc:dd:ee:ff only) at 1M CCK / 6M / 24M / 54M OFDM and counts Probe Responses addressed back to us, plus one broadcast wildcard probe counting distinct answering APs. No deauth/disassoc frame is built anywhere in this file; no destination other than the user's own router is ever used for a directed frame.
   `./build/injtest -c 7 -n 30` -> INJTEST OK 1M=30/30 6M=29/30 24M=28/30 54M=28/30 bcast_aps=2, at the existing default TX power index (0x20); no TX power change was needed to pass the >=80% bar.
+
+## Vendor parity (goal: behave like the original "ALFA USB WiFi Driver (Build 0919).pkg")
+What the vendor pkg really contains (extracted 2026-10-25, all x86_64, none loadable on Apple Silicon):
+- RtWlanU / RtWlanU1827 kexts (IOUSBInterface match, one IONetworkController = a normal `en` interface), RtWlanDisk (the fake CD-ROM mode switch).
+- StatusBarApp 5.0.8 (menu bar): scan list + signal bars, click-to-join open/WEP/WPA-PSK/802.1X (PEAP/TTLS/TLS/LEAP), join hidden ("Join Other"), saved profiles + auto-reconnect to last networks, create ad-hoc, WPS (PBC + PIN), Wi-Fi RF on/off, status window, country code (blocks 5 GHz "AC" in unsupported countries), TX power (`-setTxPowerAll`), RSSI, about/uninstall.
+- RtWlanHelper (root helper), bundled wpa_supplicant (`-Dosx`), LaunchAgent + LaunchDaemon.
+
+Design (one, not a menu): a root daemon `awusd` (launchd) owns the USB device: hot-plug, scan, join, reconnect, DHCP, utun. A CLI `awusctl` and a menu-bar app talk to it over a unix socket. Real `en` Wi-Fi interface is NOT possible without an Apple-granted DriverKit networking entitlement (no signing identity here), so utun is the substitute; this is the one deliberate difference.
+
+Parity checklist (state: have / todo), each with its check:
+ 1 scan list with SSID/BSSID/ch/RSSI/security, 2.4+5 GHz ........ have partly (monitor); todo `awusctl scan` -- check: lists MyNetwork + MyNetwork-5G
+ 2 join WPA2-PSK 2.4 GHz ........................................ have (wifi --tun)
+ 3 join WPA2-PSK 5 GHz .......................................... todo -- check: ping over ch 132/36 (DFS: check CAC)
+ 4 join open network ............................................ todo
+ 5 join WEP (40/104, open+shared) ............................... todo
+ 6 WPA1/TKIP + mixed mode ....................................... todo
+ 7 hidden SSID ("Join Other") ................................... todo
+ 8 WPA3-SAE (vendor wpa_supplicant is old; nice-to-have) ........ todo
+ 9 802.1X EAP PEAP/TTLS/TLS/LEAP ................................ todo (decide: embed wpa_supplicant via ctrl iface)
+10 ad-hoc create/join ........................................... todo
+11 WPS PBC + PIN ............................................... todo
+12 saved profiles + auto-join + auto-reconnect + hot-plug ....... todo -- check: unplug/replug and sleep/wake rejoin
+13 RF on/off, TX power ......................................... todo
+14 RSSI / link speed / status query ............................ todo
+15 country code + 5 GHz channel rules + DFS ..................... todo
+16 40/80 MHz, short GI, aggregation (throughput) ............... todo -- check: iperf3 number vs vendor claim
+17 LED ......................................................... todo
+18 menu-bar app + installer pkg + uninstall ..................... todo
+19 DHCP renew, IPv6, DNS applied to the service ................. todo (now IPv4 host routes only)
+20 USB mode-switch (fake CD) handling ........................... check if 0bda:0811 ever shows as disk
