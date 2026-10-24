@@ -44,3 +44,9 @@ test-wpa: build/test_wpa
 	./build/test_wpa
 build/test_wpa: src/wpa.c src/wpa.h src/test_wpa.c | build
 	$(CC) -O2 -Wall -o $@ src/wpa.c src/test_wpa.c
+
+.PHONY: test-net
+build/test_net: src/test_net.c src/net.c src/net.h src/tun.c src/tun.h | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/test_net.c src/net.c src/tun.c
+test-net: build/test_net
+	./build/test_net
