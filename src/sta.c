@@ -8,6 +8,7 @@
 #include <time.h>
 #include "sta.h"
 #include "mac.h"
+#include "phy.h"
 #include "tx.h"
 #include "wep.h"
 
@@ -20,7 +21,7 @@ void sta_init(sta_t *s, rtl_t *r, const char *ssid, const uint8_t *bssid, int ch
     snprintf(s->ssid, sizeof s->ssid, "%s", ssid ? ssid : "");
     if (bssid) { memcpy(s->bssid, bssid, 6); s->have_bssid = 1; }
     s->channel = channel;
-    s->rate = 10;
+    s->rate = channel > 14 ? 60 : 10;
     s->eapol_keyinfo = -1;
     s->last_status = -1;
     s->mac[0] = 0x02;
@@ -33,6 +34,18 @@ static void put_hdr(uint8_t *f, uint8_t fc0, const uint8_t *a1, const uint8_t *a
     memset(f, 0, 24);
     f[0] = fc0;
     memcpy(f + 4, a1, 6); memcpy(f + 10, a2, 6); memcpy(f + 16, a3, 6);
+}
+
+int sta_is_dfs(int ch) { return ch >= 52 && ch <= 144; }
+
+int sta_set_channel(sta_t *s, int ch)
+{
+    int rc = rtl_set_channel(s->r, ch, 1);
+    if (rc) return rc;
+    s->channel = ch;
+    s->rate = ch > 14 ? 60 : 10;            // management rate: 6 Mbps OFDM on 5 GHz (CCK does not exist there), 1 Mbps CCK on 2.4 GHz
+    s->beacon_ms = 0;                       // a beacon heard on another channel proves nothing here
+    return 0;
 }
 
 // ---- RX handling ----
@@ -89,6 +102,7 @@ static void on_frame(void *ud, const rtl_frame_t *f)
             s->ies_len = (int)(end - ie) < (int)sizeof s->ies ? (int)(end - ie) : (int)sizeof s->ies;
             memcpy(s->ies, ie, s->ies_len);
             s->ap_seen = 1;
+            if (sub == 8) s->beacon_ms = now_ms();
         } else if (sub == 11 && tome && frombss && len >= 30) {   // auth (transaction 2 or 4)
             s->auth_rx_algo = d[24] | d[25] << 8;
             s->auth_status = d[28] | d[29] << 8;
@@ -134,8 +148,41 @@ void sta_poll(sta_t *s, int ms, sta_data_cb cb, void *ud)
     do {
         long left = end - now_ms();
         if (left < 1) left = 1;
-        if (rtl_rx_poll(s->r, on_frame, &x, left > 30 ? 30 : (int)left) < 0) break;
+        s->in_rx++;
+        int rc = rtl_rx_poll(s->r, on_frame, &x, left > 30 ? 30 : (int)left);
+        s->in_rx--;
+        if (rc < 0) break;
     } while (now_ms() < end);
+}
+
+// DFS transmit rule (the regulatory "no transmission before the channel is known to be in use by an AP" idea, applied to a
+// client): on channels 52-144 this station sends NOTHING unless a Beacon from the AP we are talking to was received within
+// the last DFS_BEACON_MS. Radar detection is not implemented here, so we only ever follow an AP that is already beaconing
+// there. When called from the join steps (scan/auth/assoc, not from an RX callback and not yet associated) the gate may wait
+// up to DFS_WAIT_MS listening for that beacon; everywhere else (inside RX callbacks, after association) it only checks,
+// because polling there would re-enter the receive path. Returns 0 = may transmit, 3 = refused (counted in dfs_refused).
+#define DFS_BEACON_MS 1000
+#define DFS_WAIT_MS   1500
+static int tx_gate(sta_t *s, int may_poll)
+{
+    if (!sta_is_dfs(s->channel)) return 0;
+    if (s->beacon_ms && now_ms() - s->beacon_ms <= DFS_BEACON_MS) return 0;
+    if (may_poll && !s->in_rx && !s->associated) {
+        long end = now_ms() + DFS_WAIT_MS;
+        while (now_ms() < end) {
+            sta_poll(s, 50, NULL, NULL);
+            if (s->beacon_ms && now_ms() - s->beacon_ms <= DFS_BEACON_MS) return 0;
+        }
+    }
+    s->dfs_refused++;
+    return 3;
+}
+
+static int tx_mgmt(sta_t *s, const uint8_t *fr, int n, int rate, int retries, int may_poll)
+{
+    int g = tx_gate(s, may_poll);
+    if (g) return g;
+    return rtl_tx_frame(s->r, fr, n, rate, retries) ? 2 : 0;
 }
 
 // ---- management exchanges ----
@@ -147,12 +194,16 @@ int sta_scan(sta_t *s, int timeout_ms)
     int n = 24, sl = strlen(s->ssid);
     fr[n++] = 0; fr[n++] = sl; memcpy(fr + n, s->ssid, sl); n += sl;
     static const uint8_t sr[] = {1, 4, 0x82, 0x84, 0x8b, 0x96};
-    memcpy(fr + n, sr, sizeof sr); n += sizeof sr;
     static const uint8_t er[] = {50, 8, 0x0c, 0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6c};
-    memcpy(fr + n, er, sizeof er); n += sizeof er;
+    static const uint8_t sr5[] = {1, 8, 0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c};     // 5 GHz: OFDM rates only
+    if (s->channel > 14) { memcpy(fr + n, sr5, sizeof sr5); n += sizeof sr5; }
+    else { memcpy(fr + n, sr, sizeof sr); n += sizeof sr; memcpy(fr + n, er, sizeof er); n += sizeof er; }
     long end = now_ms() + timeout_ms;
+    s->dfs_refused = 0;
     while (now_ms() < end && !s->ap_seen) {
-        if (rtl_tx_frame(s->r, fr, n, 10, 3)) return 2;
+        // On a DFS channel this stays passive (no probe) until the AP's Beacon was heard, see tx_gate.
+        int rc = tx_mgmt(s, fr, n, s->rate, 3, 0);
+        if (rc && rc != 3) return 2;
         sta_poll(s, 250, NULL, NULL);
     }
     return s->ap_seen ? 0 : 1;
@@ -170,7 +221,7 @@ static int sta_auth_shared(sta_t *s)
     one[24] = 1; one[25] = 0; one[26] = 1; one[27] = 0; one[28] = one[29] = 0;
     s->auth_got = 0;
     for (int a = 0; a < 5 && !auth_reply_ok(s, 2); a++) {
-        if (rtl_tx_frame(s->r, one, sizeof one, s->rate, 7)) return 2;
+        if (tx_mgmt(s, one, sizeof one, s->rate, 7, 1) == 2) return 2;
         sta_poll(s, 300, NULL, NULL);
     }
     if (!auth_reply_ok(s, 2)) { s->last_status = -1; return 1; }
@@ -186,7 +237,7 @@ static int sta_auth_shared(sta_t *s)
     if (n < 0) return 2;
     s->auth_got = 0;
     for (int a = 0; a < 5 && !auth_reply_ok(s, 4); a++) {
-        if (rtl_tx_frame(s->r, fr, 24 + n, s->rate, 7)) return 2;
+        if (tx_mgmt(s, fr, 24 + n, s->rate, 7, 1) == 2) return 2;
         sta_poll(s, 300, NULL, NULL);
     }
     if (!auth_reply_ok(s, 4)) { s->last_status = -1; return 1; }
@@ -202,7 +253,7 @@ int sta_auth(sta_t *s)
     fr[24] = fr[25] = 0; fr[26] = 1; fr[27] = 0; fr[28] = fr[29] = 0;
     s->auth_got = 0;
     for (int a = 0; a < 5 && !auth_reply_ok(s, 2); a++) {
-        if (rtl_tx_frame(s->r, fr, sizeof fr, s->rate, 7)) return 2;
+        if (tx_mgmt(s, fr, sizeof fr, s->rate, 7, 1) == 2) return 2;
         sta_poll(s, 300, NULL, NULL);
     }
     if (!auth_reply_ok(s, 2)) { s->last_status = -1; return 1; }
@@ -226,7 +277,7 @@ int sta_assoc(sta_t *s)
     if (s->sec_ie_len) { memcpy(fr + n, s->sec_ie, s->sec_ie_len); n += s->sec_ie_len; }
     s->assoc_got = 0;
     for (int a = 0; a < 5 && !s->assoc_got; a++) {
-        if (rtl_tx_frame(s->r, fr, n, s->rate, 7)) return 2;
+        if (tx_mgmt(s, fr, n, s->rate, 7, 1) == 2) return 2;
         sta_poll(s, 400, NULL, NULL);
     }
     if (!s->assoc_got) { s->last_status = -1; return 1; }
@@ -242,6 +293,7 @@ int sta_send_data(sta_t *s, const uint8_t dst[6], const uint8_t *body, int blen,
     put_hdr(fr, 0x08, s->bssid, s->mac, dst);
     fr[1] = 0x01 | (prot ? 0x40 : 0);                   // to-DS (+ Protected as given by caller)
     memcpy(fr + 24, body, blen);
+    if (tx_gate(s, 0)) return -3;
     return rtl_tx_data(s->r, fr, 24 + blen, rate, 7);
 }
 
@@ -250,6 +302,7 @@ int sta_send_null(sta_t *s)
     uint8_t fr[24];
     put_hdr(fr, 0x48, s->bssid, s->mac, s->bssid);      // null function (subtype 4)
     fr[1] = 0x01;                                       // to-DS, PM=0
+    if (tx_gate(s, 0)) return -3;
     return rtl_tx_data(s->r, fr, 24, 60, 7);
 }
 
@@ -259,5 +312,5 @@ int sta_deauth(sta_t *s, int reason)
     put_hdr(fr, 0xC0, s->bssid, s->mac, s->bssid);
     fr[24] = reason; fr[25] = reason >> 8;
     s->associated = 0;
-    return rtl_tx_frame(s->r, fr, sizeof fr, s->rate, 3);
+    return tx_mgmt(s, fr, sizeof fr, s->rate, 3, 0);
 }

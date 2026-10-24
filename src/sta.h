@@ -37,6 +37,9 @@ typedef struct {
     // internal
     rtl_t *r;
     int rate;                           // mgmt TX rate (Mbps*10)
+    long beacon_ms;                     // monotonic time of the last matching Beacon (0 = none), for the DFS transmit gate
+    int in_rx;                          // inside sta_poll's receive callbacks: TX must not poll
+    int dfs_refused;                    // transmissions refused by the DFS gate since the last scan
     int auth_status, auth_got, auth_rx_algo, assoc_got, assoc_status;   // auth_got = transaction sequence number of the last Authentication frame for us (0 = none)
     uint8_t challenge[128]; int challenge_len;                          // shared-key challenge text from transaction 2
     uint8_t last_hdr_dummy;
@@ -47,6 +50,9 @@ typedef struct {
 // frame (FCS stripped) is a data frame for us: from-DS from our BSSID, addr1 == our MAC or group. hdr intact.
 typedef void (*sta_data_cb)(void *ud, const uint8_t *frame, int len, const rtl_frame_t *f);
 
+// Channel switch (tunes the radio, picks the management rate: 6 Mbps OFDM on 5 GHz) and the DFS rule: see tx_gate in sta.c.
+int  sta_set_channel(sta_t *s, int ch);
+int  sta_is_dfs(int ch);   // 52-144
 void sta_init(sta_t *s, rtl_t *r, const char *ssid, const uint8_t *bssid, int channel);
 // Each returns 0 on success, nonzero failure (s->last_status holds the 802.11 status code when the AP refused, else -1 = timeout).
 int  sta_scan(sta_t *s, int timeout_ms);

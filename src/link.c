@@ -79,7 +79,7 @@ static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
         LOG("rx EAPOL key_info=0x%04x replay=%llu kdlen=%zu", k.info, (unsigned long long)k.replay, k.key_data_len);
         if ((k.info & EAPOL_KEY_PAIRWISE) && !(k.info & EAPOL_KEY_MIC)) {
             l->m1_count++; if (l->m1_count == 1) l->t_m1 = now_ms();
-            if (l->m1_count > 1) { l->hs_rate = (l->m1_count % 2) ? 60 : 10; LOG("M1 retransmit #%d -> reply rate %d", l->m1_count, l->hs_rate); }
+            if (l->m1_count > 1) { l->hs_rate = (l->m1_count % 2 || l->s.channel > 14) ? 60 : 10;      /* no CCK (10) on 5 GHz */ LOG("M1 retransmit #%d -> reply rate %d", l->m1_count, l->hs_rate); }
         }
     } else LOG("rx EAPOL malformed len=%zu", el);
     int rc = wpa_rx_eapol(&l->w, e, el, out, &ol, &ev);
@@ -313,6 +313,7 @@ static int jfail(link_t *l, const char *step, const char *reason)
 static int jfail_status(link_t *l, const char *step)
 {
     char b[40];
+    if (l->s.dfs_refused) return jfail(l, step, "dfs_no_beacon (not transmitting on a DFS channel without a beacon from the AP in the last second)");
     if (l->s.last_status < 0) return jfail(l, step, "timeout");
     snprintf(b, sizeof b, "status=%d", l->s.last_status);
     return jfail(l, step, b);
@@ -401,6 +402,22 @@ static int resolve_security(link_t *l)
     return 0;
 }
 
+// Find the AP when no channel was given: 2.4 GHz non-overlapping first, then the rest of 2.4, then 5 GHz non-DFS, then DFS
+// (passive: sta_scan does not transmit there until the AP's Beacon was heard). Sets l->cfg.channel. 0 or -1.
+static int find_channel(link_t *l)
+{
+    static const int order[] = {1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13,
+                                36, 40, 44, 48, 149, 153, 157, 161, 165,
+                                52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144};
+    for (unsigned i = 0; i < sizeof order / sizeof order[0] && !(l->stop && *l->stop); i++) {
+        int ch = order[i];
+        if (sta_set_channel(&l->s, ch)) continue;
+        l->s.ap_seen = 0;
+        if (sta_scan(&l->s, sta_is_dfs(ch) ? 1300 : 700) == 0) { l->cfg.channel = ch; LOG("found the AP on channel %d", ch); return 0; }
+    }
+    return -1;
+}
+
 static int join_once(link_t *l)
 {
     char b[200];
@@ -410,7 +427,8 @@ static int join_once(link_t *l)
     memset(l->gk, 0, sizeof l->gk);
     memset(l->rx_pn, 0, sizeof l->rx_pn); l->tx_pn = 1; l->hs_rate = l->cfg.hs_rate ? l->cfg.hs_rate : 60;
     s->deauth_seen = s->disassoc_seen = 0; s->associated = 0; s->ap_seen = 0;
-    if (sta_scan(s, 4000)) return jfail(l, "scan", "no_probe_response");
+    if (!l->cfg.channel && find_channel(l)) return jfail(l, "scan", "no_probe_response");
+    if (s->ap_seen == 0 && sta_scan(s, 4000)) return jfail(l, "scan", "no_probe_response");
     LOG("ap bssid=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d", s->bssid[0], s->bssid[1], s->bssid[2], s->bssid[3], s->bssid[4], s->bssid[5], s->rssi);
     if (resolve_security(l)) return -1;
     int keyed = l->sec == LINK_SEC_WPA2 || l->sec == LINK_SEC_WPA;
@@ -477,6 +495,7 @@ int link_join(rtl_t *r, const link_cfg_t *cfg, link_t *l)
     l->data_rate = l->cfg.data_rate;
     sta_init(&l->s, r, cfg->ssid, cfg->bssid, cfg->channel);
     l->s.hidden = cfg->hidden;
+    if (cfg->channel && r->channel != cfg->channel && sta_set_channel(&l->s, cfg->channel)) { jfail(l, "channel", "set_channel_failed"); return -1; }
     l->s.def_cb = on_data; l->s.def_ud = l;
     LOG("sa=%02x:%02x:%02x:%02x:%02x:%02x", l->s.mac[0], l->s.mac[1], l->s.mac[2], l->s.mac[3], l->s.mac[4], l->s.mac[5]);
     for (int a = 1; a <= 3 && !(l->stop && *l->stop); a++) {
