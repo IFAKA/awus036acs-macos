@@ -145,6 +145,15 @@ build/pkg-bin/awusctl: $(AWUSCTL_SRC) src/scanlib.h src/country.h src/proto.h
 pkg: build/pkg-bin/awusd build/pkg-bin/awusctl app
 	sh packaging/build-pkg.sh
 
+# ---- WPS enrollee engine (pure; no USB): unit + in-memory registrar loopback + independent python cross-check ----
+build/test_wps: src/wps.c src/wps.h src/bignum_dh.c src/bignum_dh.h src/test_wps.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/wps.c src/bignum_dh.c src/test_wps.c
+.PHONY: test-wps
+test-wps: build/test_wps
+	WPS_TRANSCRIPT=build/wps_transcript.txt ./build/test_wps
+	python3 tools/wps_check.py transcript build/wps_transcript.txt
+test: test-wps
+
 # ---- WPA3-SAE + PMF engine (pure; no USB): Annex J.10 vectors, RFC 4493, python cross-checks, two-instance exchange ----
 build/test_sae: src/sae.c src/sae.h src/wpa3.c src/wpa3.h src/wpa.c src/wpa.h src/wep.c src/test_sae.c | build
 	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/sae.c src/wpa3.c src/wpa.c src/wep.c src/test_sae.c
