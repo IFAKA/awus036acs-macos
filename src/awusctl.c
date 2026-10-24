@@ -2,8 +2,12 @@
 // Part of awus036acs-macos: a native userspace driver for the RTL8811AU/RTL8821AU
 // (Alfa AWUS036ACS) on macOS, derived from aircrack-ng/rtl8812au (GPLv2).
 // See LICENSE for the full license text.
-// awusctl: command-line control of the adapter (vendor-parity checklist). For now one subcommand:
+// awusctl: command-line control of the adapter (vendor-parity checklist). Subcommands:
 //   awusctl scan [--band 2|5|all] [--dwell MS] [--passes N] [--json]
+//   awusctl join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wpa|wpa2|auto] [--key-env VAR] [--wep-keyid N]
+// `join` associates, runs the security handshake, gets a DHCP lease, pings the gateway, then leaves (Deauthentication,
+// reason 3). It needs no root (no utun). The passphrase / WEP key is read from the environment variable named by --key-env,
+// never from argv. Only join networks you own or are allowed to test.
 // Hops channels (2.4 GHz 1-13; 5 GHz 36-64, 100-144, 149-165), collects Beacons and Probe Responses and prints one
 // row per BSSID: SSID, BSSID, channel (from the frame's own DS/HT element, not the RX channel), RSSI, security, WPS, rates.
 // Passive on DFS channels (52-144). On every other channel it sends ONE broadcast wildcard Probe Request per dwell
@@ -14,6 +18,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <signal.h>
 #include "rtl.h"
 #include "phy.h"
 #include "mac.h"
@@ -21,6 +26,7 @@
 #include "tx.h"
 #include "bringup.h"
 #include "scanparse.h"
+#include "link.h"
 
 static const int chan24[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
 static const int chan5[]  = {36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165};
@@ -236,16 +242,86 @@ static int cmd_scan(int argc, char **argv)
     return 0;
 }
 
+static volatile sig_atomic_t stop_req;
+static void on_sig(int s) { (void)s; stop_req = 1; }
+
+static int cmd_join(int argc, char **argv)
+{
+    const char *ssid = NULL, *key_env = NULL; uint8_t bssid[6]; int have_b = 0, ch = 0, hidden = 0, keyid = 0;
+    link_sec_t sec = LINK_SEC_AUTO;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--ssid") && i + 1 < argc) ssid = argv[++i];
+        else if (!strcmp(argv[i], "--bssid") && i + 1 < argc)
+            have_b = sscanf(argv[++i], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]) == 6;
+        else if (!strcmp(argv[i], "--ch") && i + 1 < argc) ch = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--hidden")) hidden = 1;
+        else if (!strcmp(argv[i], "--key-env") && i + 1 < argc) key_env = argv[++i];
+        else if (!strcmp(argv[i], "--wep-keyid") && i + 1 < argc) keyid = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--sec") && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (!strcmp(v, "auto")) sec = LINK_SEC_AUTO; else if (!strcmp(v, "open")) sec = LINK_SEC_OPEN;
+            else if (!strcmp(v, "wep")) sec = LINK_SEC_WEP; else if (!strcmp(v, "wep-shared")) sec = LINK_SEC_WEP_SHARED;
+            else if (!strcmp(v, "wpa")) sec = LINK_SEC_WPA; else if (!strcmp(v, "wpa2")) sec = LINK_SEC_WPA2;
+            else { fprintf(E, "awusctl join: --sec must be auto, open, wep, wep-shared, wpa or wpa2\n"); return 2; }
+        } else { fprintf(E, "awusctl join: unknown or incomplete option %s\n", argv[i]); return 2; }
+    }
+    if (!ssid || !*ssid || strlen(ssid) > 32) { fprintf(E, "awusctl join: --ssid S (1-32 bytes) is required\n"); return 2; }
+    if (ch < 0 || ch > 165) { fprintf(E, "awusctl join: bad --ch\n"); return 2; }
+    const char *key = NULL;
+    if (key_env) {
+        key = getenv(key_env);
+        if (!key || !*key) { fprintf(E, "awusctl join: environment variable %s is empty or unset\n", key_env); return 2; }
+    }
+    if ((sec == LINK_SEC_WPA || sec == LINK_SEC_WPA2 || sec == LINK_SEC_WEP || sec == LINK_SEC_WEP_SHARED) && !key) {
+        fprintf(E, "awusctl join: --sec %s needs --key-env VAR\n", link_sec_str(sec)); return 2;
+    }
+    if (sec == LINK_SEC_OPEN) key = NULL;
+    struct sigaction sg; memset(&sg, 0, sizeof sg); sg.sa_handler = on_sig; sigemptyset(&sg.sa_mask);
+    sigaction(SIGINT, &sg, NULL); sigaction(SIGTERM, &sg, NULL);
+
+    rtl_t r = {0};
+    char b[160]; const char *step;
+    r.verbose = 1;
+    if (rtl_bringup(&r, ch ? ch : 1, &step, b, sizeof b)) { fprintf(E, "join FAIL bringup %s: %s\n", step, b); return 1; }
+    if (rtl_set_monitor(&r)) { fprintf(E, "join FAIL set_monitor\n"); rtl_close(&r); return 1; }
+    r.verbose = 0;
+    srand((unsigned)time(NULL) ^ (unsigned)getpid());
+    static link_t L;
+    link_init(&L, &r);
+    L.out = E; L.stop = &stop_req;
+    link_cfg_t cfg = { .ssid = ssid, .bssid = have_b ? bssid : NULL, .channel = ch, .hidden = hidden, .sec = sec, .key = key, .wep_keyid = keyid };
+    int rc = 1;
+    if (link_join(&r, &cfg, &L)) { fprintf(E, "join FAIL %s %s\n", L.fail_step, L.fail_reason); goto out; }
+    char ips[20], gws[20];
+    link_ipstr(ips, sizeof ips, L.n.lease.ip); link_ipstr(gws, sizeof gws, L.n.lease.gw);
+    link_ping_t pr;
+    int prc = link_ping(&L, L.n.lease.gw, 6, &pr);
+    if (prc) { fprintf(E, "join FAIL ping %s (ip=%s gw=%s)\n", prc > 0 ? "no_reply_to_first_echo" : "deauthenticated_or_stopped", ips, gws); goto out; }
+    fprintf(E, "join OK sec=%s pairwise=%s group=%s ch=%d ip=%s gw=%s ping %d/%d loss %d%% avg_rtt %ldms\n",
+            link_sec_str(L.sec), link_cipher_str(L.pw_cipher), link_cipher_str(L.grp_cipher), L.s.channel, ips, gws,
+            pr.recv, pr.sent, pr.sent ? 100 - 100 * pr.recv / pr.sent : 100, pr.avg_rtt_ms);
+    rc = pr.recv == pr.sent ? 0 : 3;
+out:
+    if (L.s.associated) link_leave(&L);
+    rtl_close(&r);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 2 || strcmp(argv[1], "scan")) {
-        fprintf(E, "usage: awusctl scan [--band 2|5|all] [--dwell MS] [--passes N] [--json]\n");
+    if (argc < 2 || (strcmp(argv[1], "scan") && strcmp(argv[1], "join"))) {
+        fprintf(stderr, "usage: awusctl scan [--band 2|5|all] [--dwell MS] [--passes N] [--json]\n"
+                        "       awusctl join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|auto]\n"
+                        "                    [--key-env VAR] [--wep-keyid N]\n"
+                        "  join: associate, DHCP, ping the gateway 6 times, leave. No root needed. The passphrase or WEP key\n"
+                        "  comes from the environment variable VAR only. Example:\n"
+                        "    MYPSK=... awusctl join --ssid HomeNet --ch 36 --key-env MYPSK\n");
         return 2;
     }
     E = fdopen(dup(2), "w");
     if (!E || !freopen("/tmp/awusctl.log", "w", stderr)) return 2;
     setvbuf(stderr, NULL, _IOLBF, 0);
-    int rc = cmd_scan(argc - 2, argv + 2);
+    int rc = !strcmp(argv[1], "join") ? cmd_join(argc - 2, argv + 2) : cmd_scan(argc - 2, argv + 2);
     fflush(E);
     return rc;
 }
