@@ -62,3 +62,16 @@ build/wifi: $(WIFI_SRC) src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/ph
 	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
 .PHONY: wifi
 wifi: build/wifi
+
+.PHONY: test-scanparse test
+build/test_scanparse: src/scanparse.c src/scanparse.h src/test_scanparse.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/scanparse.c src/test_scanparse.c
+test-scanparse: build/test_scanparse
+	./build/test_scanparse
+test: test-wpa test-net test-scanparse
+
+AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/scanparse.c,$(INJ_SRC))
+build/awusctl: $(AWUSCTL_SRC) src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+	$(CC) $(CFLAGS) -o $@ $(AWUSCTL_SRC) $(LIBS)
+.PHONY: awusctl
+awusctl: build/awusctl

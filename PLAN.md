@@ -41,7 +41,7 @@ What the vendor pkg really contains (extracted 2026-10-25, all x86_64, none load
 Design (one, not a menu): a root daemon `awusd` (launchd) owns the USB device: hot-plug, scan, join, reconnect, DHCP, utun. A CLI `awusctl` and a menu-bar app talk to it over a unix socket. Real `en` Wi-Fi interface is NOT possible without an Apple-granted DriverKit networking entitlement (no signing identity here), so utun is the substitute; this is the one deliberate difference.
 
 Parity checklist (state: have / todo), each with its check:
- 1 scan list with SSID/BSSID/ch/RSSI/security, 2.4+5 GHz ........ have partly (monitor); todo `awusctl scan` -- check: lists MyNetwork + MyNetwork-5G
+ 1 scan list with SSID/BSSID/ch/RSSI/security, 2.4+5 GHz ........ DONE 2026-10-25 (`awusctl scan`) -- check: lists MyNetwork + MyNetwork-5G
  2 join WPA2-PSK 2.4 GHz ........................................ have (wifi --tun)
  3 join WPA2-PSK 5 GHz .......................................... todo -- check: ping over ch 132/36 (DFS: check CAC)
  4 join open network ............................................ todo
@@ -61,3 +61,5 @@ Parity checklist (state: have / todo), each with its check:
 18 menu-bar app + installer pkg + uninstall ..................... todo
 19 DHCP renew, IPv6, DNS applied to the service ................. todo (now IPv4 host routes only)
 20 USB mode-switch (fake CD) handling ........................... check if 0bda:0811 ever shows as disk
+
+DONE 2026-10-25 checklist item 1: `build/awusctl scan [--band 2|5|all] [--dwell MS] [--passes N] [--json]` (src/awusctl.c) + pure parser src/scanparse.c with `make test-scanparse` (also in `make test`). Hardware: `--band all --dwell 250` listed 59-63 BSSIDs incl. our own 2.4G ch 7 and 5G ch 132 APs as WPA2-PSK/CCMP; `--json` passes `python3 -m json.tool`. Wildcard probes only (not on DFS 52-144), no deauth.
