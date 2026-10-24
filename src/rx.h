@@ -13,6 +13,8 @@ typedef struct {
     uint8_t rate;          // RX descriptor rate: 0-3 CCK 1/2/5.5/11, 4-11 OFDM 6..54, 12-27 HT MCS0-15, 44+ VHT
     int channel;           // r->channel at receive time
     int crc_err, icv_err;
+    int swdec;             // RX desc SWDEC bit: 1 = hardware did NOT decrypt (software must)
+    int security;          // RX desc security type field
     int bw;                // 0 = 20, 1 = 40, 2 = 80
 } rtl_frame_t;
 

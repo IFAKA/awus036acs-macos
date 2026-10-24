@@ -200,3 +200,14 @@ int rtl_set_monitor(rtl_t *r)
     fprintf(stderr, "RCR readback 0x%08X, CR 0x%04X\n", rtl_r32(r, REG_RCR), rtl_r16(r, REG_CR));
     return e ? -1 : 0;
 }
+
+// Station state: our MAC (REG_MACID 0x610), BSSID (0x618), network type = station/infrastructure (CR[17:16] = 2).
+// RCR is left as set by rtl_set_monitor (software filters), so the hardware still ACKs unicast frames to our MAC.
+int rtl_set_sta_addr(rtl_t *r, const uint8_t mac[6], const uint8_t bssid[6])
+{
+    int e = 0;
+    for (int i = 0; i < 6; i++) e |= rtl_w8(r, 0x0610 + i, mac[i]);
+    for (int i = 0; i < 6; i++) e |= rtl_w8(r, 0x0618 + i, bssid ? bssid[i] : 0);
+    e |= rtl_w32(r, REG_CR, (rtl_r32(r, REG_CR) & ~0x30000u) | (2u << 16));
+    return e ? -1 : 0;
+}

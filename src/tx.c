@@ -4,6 +4,7 @@
 
 #define TXDESC_SIZE 40
 #define QSLT_MGNT   0x12
+#define QSLT_BE     0x00
 #define RATEID_B    8
 #define RATEID_G    7
 #define MGMT_MACID  1
@@ -28,7 +29,7 @@ static int hw_rate(int rate)
     return -1;
 }
 
-int rtl_tx_build_desc(uint8_t *d, int len, int rate, int retries, int bmc)
+static int build_desc(uint8_t *d, int len, int rate, int retries, int bmc, int qsel)
 {
     int hr = hw_rate(rate);
     if (hr < 0) return -1;
@@ -42,7 +43,8 @@ int rtl_tx_build_desc(uint8_t *d, int len, int rate, int retries, int bmc)
     set_bits(d, 0, 31, 1, 1);                         // OWN
     // dword 1
     set_bits(d, 4, 0, 7, MGMT_MACID);
-    set_bits(d, 4, 8, 5, QSLT_MGNT);
+    set_bits(d, 4, 8, 5, qsel);
+    if (qsel != QSLT_MGNT) set_bits(d, 8, 16, 1, 1);   // AGG_BREAK for data
     set_bits(d, 4, 16, 5, rate <= 110 ? RATEID_B : RATEID_G);
     // dword 2: SPE_RPT -> ask the chip for a C2H TX report
     set_bits(d, 8, 19, 1, 1);
@@ -62,9 +64,14 @@ int rtl_tx_build_desc(uint8_t *d, int len, int rate, int retries, int bmc)
     return hr;
 }
 
+int rtl_tx_build_desc(uint8_t *d, int len, int rate, int retries, int bmc)
+{
+    return build_desc(d, len, rate, retries, bmc, QSLT_MGNT);
+}
+
 // Bulk OUT endpoint for the MGT queue: Linux (typical, non wifi_spec) uses RtOutPipe[3] with 4 OUT endpoints
 // (in descriptor order 0x05 HIGH, 0x06 NORMAL, 0x08 LOW, 0x09 EXTRA), RtOutPipe[0] otherwise.
-static int mgt_ep(rtl_t *r)
+static int out_ep(rtl_t *r, int data)
 {
     uint8_t eps[8]; int n = 0;
     struct libusb_config_descriptor *cf = NULL;
@@ -76,18 +83,19 @@ static int mgt_ep(rtl_t *r)
     }
     libusb_free_config_descriptor(cf);
     if (n == 0) return -1;
+    if (data) return n >= 3 ? eps[2] : eps[n - 1];   // BE -> LOW queue (see mac.c queue map)
     return n >= 4 ? eps[3] : eps[0];
 }
 
-int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
+static int tx_common(rtl_t *r, const uint8_t *frame, int len, int rate, int retries, int data)
 {
     static uint8_t buf[TXDESC_SIZE + 8 + 2400];
     if (len < 10 || len > 2300) return -2;
-    int ep = mgt_ep(r);
+    int ep = out_ep(r, data);
     if (ep < 0) return -3;
     int bmc = frame[4] & 1;                           // addr1 group bit
     int pad = ((TXDESC_SIZE + len) % 512 == 0);       // avoid a bulk size that needs a zero-length packet (Linux pads 8 bytes)
-    if (rtl_tx_build_desc(buf, len, rate, retries, bmc) < 0) return -4;
+    if (build_desc(buf, len, rate, retries, bmc, data ? QSLT_BE : QSLT_MGNT) < 0) return -4;
     if (pad) {
         // PKT_OFFSET = 1 (8-byte units of padding) at dword1 bits 24..28, then recompute checksum
         set_bits(buf, 4, 24, 5, 1);
@@ -111,4 +119,14 @@ int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
     rtl_tx_stats.completed++;
     if (r->verbose > 1) fprintf(stderr, "tx: ep 0x%02X wrote %d bytes (frame %d)\n", ep, done, len);
     return 0;
+}
+
+int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
+{
+    return tx_common(r, frame, len, rate, retries, 0);
+}
+
+int rtl_tx_data(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
+{
+    return tx_common(r, frame, len, rate, retries, 1);
 }

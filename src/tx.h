@@ -16,6 +16,10 @@ extern rtl_tx_stats_t rtl_tx_stats;
 // with all bytes written), <0 on error. Hardware assigns the sequence number.
 int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries);
 
+// Send one 802.11 data frame (to-DS, header + body already built by the caller, incl. any software CCMP; the hardware
+// does not encrypt: sectype none) on the BE queue / LOW bulk endpoint. Same units and return codes as rtl_tx_frame.
+int rtl_tx_data(rtl_t *r, const uint8_t *frame, int len, int rate, int retries);
+
 // Build the descriptor only (for debugging): desc must hold 40 bytes. Returns hardware rate code or -1.
 int rtl_tx_build_desc(uint8_t *desc, int len, int rate, int retries, int bmc);
 #endif

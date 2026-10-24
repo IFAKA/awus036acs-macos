@@ -11,4 +11,7 @@ int rtl_init_mac(rtl_t *r);
 // Promiscuous monitor RCR + RXFLTMAP (all mgt/ctrl/data), PHY status appended. 0 = ok.
 int rtl_set_monitor(rtl_t *r);
 
+// Program MAC address + BSSID + station network type. bssid may be NULL (zeros).
+int rtl_set_sta_addr(rtl_t *r, const uint8_t mac[6], const uint8_t *bssid);
+
 #endif

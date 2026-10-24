@@ -66,6 +66,8 @@ static int parse_buf(rtl_t *r, const uint8_t *buf, int len, rtl_frame_cb cb, voi
             f.len = pkt_len;
             f.crc_err = BITS(d0, 14, 1);
             f.icv_err = BITS(d0, 15, 1);
+            f.swdec = BITS(d0, 27, 1);
+            f.security = BITS(d0, 20, 3);
             f.rate = BITS(d3, 0, 7);
             f.bw = BITS(d4, 4, 2);
             f.channel = r->channel;
