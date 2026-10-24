@@ -80,7 +80,8 @@ static void print_body_line(const char *l)
     char tmp[PROTO_LINE * 2];
     snprintf(tmp, sizeof tmp, "%s", l);
     int first = 1;
-    for (char *t = strtok(tmp, " "); t; t = strtok(NULL, " ")) {
+    char *sv;
+    for (char *t = strtok_r(tmp, " ", &sv); t; t = strtok_r(NULL, " ", &sv)) {
         char *eq = strchr(t, '=');
         char d[PROTO_VAL * 2];
         if (eq) {
@@ -113,7 +114,8 @@ static int simple_cmd(const req_t *q)
     if (rc == 3) { fprintf(E, "awusctl: awusd is not running (no socket at %s)\n", sockpath); return 3; }
     if (rc) { fprintf(E, "awusctl: %s\n", last_err[0] == 'E' ? last_err + 4 : last_err); free(resp); return 1; }
     char *b = strdup(body);
-    for (char *l = strtok(b, "\n"); l; l = strtok(NULL, "\n")) print_body_line(l);
+    char *sv2;
+    for (char *l = strtok_r(b, "\n", &sv2); l; l = strtok_r(NULL, "\n", &sv2)) print_body_line(l);
     free(b); free(resp);
     return 0;
 }
@@ -134,7 +136,8 @@ static int scan_via_daemon(const char *band, int dwell, int passes, int json, in
     scan_row_t *rows = calloc(SCAN_MAX_APS, sizeof *rows);
     int n = 0, cached = 0;
     char *b = strdup(body);
-    for (char *l = strtok(b, "\n"); l; l = strtok(NULL, "\n")) {
+    char *sv2;
+    for (char *l = strtok_r(b, "\n", &sv2); l; l = strtok_r(NULL, "\n", &sv2)) {
         proto_req_t p;
         if (!strncmp(l, "cached=", 7)) cached = l[7] == '1';
         if (strncmp(l, "ap ", 3) || proto_parse(l, &p) || n >= SCAN_MAX_APS) continue;
@@ -254,7 +257,7 @@ static int usage(FILE *o)
 "  profile add --ssid S [--key-env VAR] [--security auto|open|wep|wpa|wpa2] [--hidden] [--priority N]\n"
 "                [--no-autojoin] [--default-route] | profile list | profile remove --ssid S\n"
 "  autojoin on|off|get\n"
-"  debug drop | unplug [MS] | wake | renew | rebind | led on|off|auto     (test hooks)\n"
+"  debug drop | unplug [MS] | wake | failnext N | renew | rebind | led on|off|auto     (test hooks)\n"
 "  quit                           stop the daemon\n"
 "  --sock PATH (any command)      socket path (default /var/run/awusd.sock as root, else $TMPDIR/awusd.sock)\n"
 "The passphrase / WEP key comes only from the environment variable named by --key-env. Example:\n"
@@ -335,7 +338,8 @@ int main(int argc, char **argv)
         if (rc != 3) {
             if (rc) { fprintf(E, "awusctl join: %s\n", last_err + 4); free(resp); return 1; }
             char *b = strdup(body);
-            for (char *l = strtok(b, "\n"); l; l = strtok(NULL, "\n")) print_body_line(l);
+            char *sv2;
+    for (char *l = strtok_r(b, "\n", &sv2); l; l = strtok_r(NULL, "\n", &sv2)) print_body_line(l);
             free(b); free(resp);
             return 0;
         }

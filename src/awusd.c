@@ -68,6 +68,7 @@ static struct {
     // work in progress
     busy_t busy; int bg; volatile sig_atomic_t abort_op, stop_req;
     int in_hook;
+    int force_fail;                                  // debug: make the next N join attempts fail at once
     // settings
     char country[3]; int txpower_pinned, txpower;
     profiles_t profiles; char profiles_path[512], conf_path[560];
@@ -318,6 +319,7 @@ static const scan_entry_t *scan_find(const char *ssid, int *blocked)
 static int do_join(const conn_t *c, char *why, size_t wn)
 {
     conn_t cc = *c;
+    if (D.force_fail > 0) { D.force_fail--; snprintf(why, wn, "debug_forced_failure"); D.joins_failed++; return -1; }
     if (!D.dev) { snprintf(why, wn, "no_device"); return -1; }
     if (D.rf_off) { snprintf(why, wn, "rf_off"); return -1; }
     if (D.linked) { link_drop(1); }
@@ -328,7 +330,7 @@ static int do_join(const conn_t *c, char *why, size_t wn)
         return -1;
     }
     if (!cc.channel && !cc.hidden) {
-        int rc = do_scan(0, 160, 2);
+        int rc = do_scan(0, 200, 2);
         if (rc == 1) { snprintf(why, wn, "interrupted"); return -1; }
         if (rc < 0) { snprintf(why, wn, "usb_error"); return -1; }
         const scan_entry_t *e = scan_find(cc.ssid, &blocked);
@@ -746,7 +748,7 @@ static void cmd_country(FILE *o, const proto_req_t *q)
 static void cmd_debug(FILE *o, const proto_req_t *q)
 {
     const char *a = proto_pos(q, 0), *v = proto_pos(q, 1);
-    if (!a) { err(o, "usage: debug drop|unplug|wake|renew|rebind|led"); return; }
+    if (!a) { err(o, "usage: debug drop|unplug|wake|failnext|renew|rebind|led"); return; }
     if (!strcmp(a, "drop")) {
         if (!D.linked) { err(o, "not_connected"); return; }
         LOGF("debug: dropping the link (polite deauth), reconnect follows the backoff");
@@ -755,6 +757,11 @@ static void cmd_debug(FILE *o, const proto_req_t *q)
         D.attempt = 0; D.next_try = now_ms() + backoff_ms(0);
         led_apply();
         fprintf(o, "OK\n"); kv(o, "next_try_in_ms", "%ld", backoff_ms(0));
+        return;
+    }
+    if (!strcmp(a, "failnext")) {
+        D.force_fail = v ? atoi(v) : 1;
+        fprintf(o, "OK\n"); kv(o, "forced_failures", "%d", D.force_fail);
         return;
     }
     if (!strcmp(a, "wake")) { on_wake("debug"); fprintf(o, "OK\n"); return; }
@@ -906,7 +913,7 @@ static void serve_ctl(int timeout_ms, int busy)
 static void rx_idle_hook(void *ud)
 {
     (void)ud;
-    if (D.in_hook) return;
+    if (D.in_hook || D.busy == B_NONE) return;     // outside a long job the main loop serves the socket itself
     D.in_hook = 1;
     serve_ctl(0, 1);
     if (D.dev && !rtl_usb_dead && D.led_force < 0) { led_set_mode(&D.led, want_led(), now_ms()); led_tick(&D.led, &D.r, now_ms()); }
@@ -993,13 +1000,15 @@ static void idle_tick(void)
     for (int i = 0; i < D.profiles.n; i++) if (D.profiles.p[i].autojoin) any = 1;
     if (!any) return;
     D.bg = 1;
-    int rc = do_scan(0, 160, 1);
+    int rc = do_scan(0, 200, 1);
     D.bg = 0;
     if (rc != 0 || defer.used) { D.next_try = now_ms() + (rc < 0 ? 2000 : 0); return; }
     int idx = profiles_pick(&D.profiles, visible_cb, NULL, D.skip_ssid[0] ? D.skip_ssid : NULL);
     if (idx < 0) { D.skip_ssid[0] = 0; D.next_try = now_ms() + 8000; return; }
     conn_t c;
     conn_from_profile(&c, &D.profiles.p[idx]);
+    const scan_entry_t *e = c.hidden ? NULL : scan_find(c.ssid, NULL);     // the scan we just did already found it
+    if (e) { c.channel = e->channel; memcpy(c.bssid, e->bssid, 6); c.have_bssid = 1; }
     LOGF("auto-join: %s", c.ssid);
     D.bg = 1;
     rc = do_join(&c, why, sizeof why);
