@@ -20,7 +20,7 @@ an individual developer outside their program. A userspace libusb driver
 sidesteps all of that: it needs no kernel extension, no entitlement, and no
 SIP changes.
 
-## Status: works, not yet 1:1 with the Linux driver
+## Status: works, not yet 1:1 with the original driver
 
 Proven on real hardware (Alfa AWUS036ACS + Apple Silicon Mac, macOS 26):
 
@@ -37,14 +37,43 @@ Proven on real hardware (Alfa AWUS036ACS + Apple Silicon Mac, macOS 26):
 - Clean teardown: the adapter detaches without disturbing the Mac's default
   route or other interfaces.
 
-Known gaps — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the checklist:
+## 1:1 with the original ALFA driver: checklist
 
-- The LED is driven by the daemon (verified by register readback; visual confirmation pending).
-- 5 GHz is scan/receive-only and lightly tested; 40/80 MHz and WPA3 are
-  unimplemented.
-- No throughput tuning, no long-session soak testing, no GTK rekey exercised.
-- No Linux-tool compatibility layer (e.g. a virtual monitor interface for
-  `aircrack-ng`/`airodump-ng` to attach to directly).
+Goal: behave like the vendor package "ALFA USB WiFi Driver (Build 0919)"
+(Realtek kexts + StatusBarApp 5.0.8, x86_64 only, so it cannot run on Apple
+Silicon). Tick a box only when it is verified; the note says how. Pick an
+unchecked item and send a PR. Detail and evidence live in [`PLAN.md`](PLAN.md).
+
+One deliberate difference: the original appears as a normal Wi-Fi `en`
+interface. That needs an Apple-granted DriverKit entitlement, so this project
+bridges to a `utun` interface instead.
+
+- [x] Scan list: SSID, BSSID, channel, RSSI, security, WPS flag, 2.4 + 5 GHz (`awusctl scan`)
+- [x] Join WPA2-PSK on 2.4 GHz (air-verified)
+- [x] Join WPA2-PSK on 5 GHz incl. DFS channel (air-verified, DFS transmit gate)
+- [ ] Join open network (logic and unit tests only, not on air)
+- [ ] Join WEP 40/104 (unit vectors only, not on air)
+- [ ] WPA1/TKIP and mixed mode (unit tests only, not on air)
+- [x] Hidden SSID join (path air-verified; a truly hidden AP is untested)
+- [ ] WPA3-SAE
+- [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP
+- [ ] Ad-hoc create/join
+- [ ] WPS push-button and PIN
+- [x] Saved profiles, auto-join, auto-reconnect with backoff (air-verified; real unplug/sleep not yet tested by a human)
+- [x] Wi-Fi on/off and TX power control (air-verified)
+- [x] RSSI, link speed and status query (`awusctl status`)
+- [x] Country code, 5 GHz channel rules, DFS marking (table is a summary, not legal text)
+- [ ] 40/80 MHz, short GI, aggregation and rate adaptation (throughput not tuned yet)
+- [ ] LED (register readback only; visual check pending)
+- [ ] Menu-bar app and installer: built, tested against a fake daemon only; not installed or run against hardware
+- [ ] DHCP renew done and air-verified; IPv6 and DNS applied to the interface are not built
+- [ ] USB mode-switch ("fake CD") handling confirmed
+- [ ] Long-run stability and root `utun` + default-route mode tested
+
+Other known gaps:
+
+- No Linux-tool compatibility layer (a virtual monitor interface for
+  `aircrack-ng`/`airodump-ng`).
 - Per-rate TX power, crystal cap, and BB swing are fixed defaults, not read
   from the adapter's efuse.
 

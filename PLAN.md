@@ -58,7 +58,7 @@ Parity checklist (state: have / todo), each with its check:
 15 country code + 5 GHz channel rules + DFS ..................... DONE 2026-10-25 air-verified (scan marks, join blocked on 132 under 00); table is a summary, not legal text
 16 40/80 MHz, short GI, aggregation (throughput) ............... todo -- check: iperf3 number vs vendor claim
 17 LED ......................................................... DONE 2026-10-25 register readback only; NEEDS USER: visual check
-18 menu-bar app + installer pkg + uninstall ..................... todo
+18 menu-bar app + installer pkg + uninstall ..................... DONE 2026-10-25 UI verified vs fake daemon only; pkg built, not installed
 19 DHCP renew, IPv6, DNS applied to the service ................. PARTLY 2026-10-25 DHCP renew/rebind air-verified; IPv6/DNS todo; root utun + default route untested
 20 USB mode-switch (fake CD) handling ........................... check if 0bda:0811 ever shows as disk
 
