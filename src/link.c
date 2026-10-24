@@ -14,6 +14,7 @@
 #include "phy.h"
 #include "scanparse.h"
 #include "tun.h"
+#include "wep.h"
 
 #define ECHO_ID 0x4157
 
@@ -131,6 +132,16 @@ static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
         return;
     }
     if (group && !memcmp(a3, l->s.mac, 6)) return;             // our own broadcast reflected by the AP
+    if (l->pw_cipher == LINK_CIPHER_WEP) {                      // WEP: one key for unicast and group, IV | keyid | data | ICV
+        uint8_t plain[2400]; int kid = -1;
+        if (len - hl > (int)sizeof plain) return;
+        if (((d[hl + 3] >> 6) & 3) != l->s.wep_keyid) { l->st_no_key++; return; }
+        int pl = wep_decrypt(l->s.wep_key, l->s.wep_key_len, d + hl, len - hl, plain, &kid);
+        if (pl < 0) { l->st_dec_fail++; if (l->st_dec_fail <= 8) LOG("wep decrypt FAIL fc=%02x%02x len=%d rc=%d", d[0], d[1], len, pl); return; }
+        l->st_dec_ok++;
+        net_rx(&l->n, plain, pl, now_ms(), &l->ops);
+        return;
+    }
     const uint8_t *key; int kid = (d[hl + 3] >> 6) & 3;
     uint64_t *lastpn;
     int tid = qos ? (d[24] & 0x0F) : 0;
@@ -164,6 +175,16 @@ static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size
     if (len > 1700) return;
     if (l->pw_cipher == LINK_CIPHER_NONE) {
         if (sta_send_data(&l->s, dst, payload, (int)len, 0, l->data_rate)) LOG("data tx failed");
+        return;
+    }
+    if (l->pw_cipher == LINK_CIPHER_WEP) {
+        uint8_t iv[3];
+        wep_next_iv(&l->s.wep_iv, iv);
+        int n = wep_encrypt(l->s.wep_key, l->s.wep_key_len, l->s.wep_keyid, iv, payload, len, out);
+        if (n < 0) return;
+        l->st_tx_enc++;
+        int rc = sta_send_data(&l->s, dst, out, n, 1, l->data_rate);
+        if (rc) LOG("data tx rc=%d", rc);
         return;
     }
     if (!l->tk_ready) return;
@@ -291,7 +312,7 @@ static int resolve_security(link_t *l)
     if (want == LINK_SEC_AUTO) {
         if (have_psk_rsn && (ap.rsn_cipher & SCAN_CIPHER_CCMP)) want = LINK_SEC_WPA2;
         else if (ap.rsn || ap.wpa1) return jfail(l, "scan", "unsupported_security");
-        else if (s->ap_cap & 0x0010) return jfail(l, "scan", "unsupported_security wep");
+        else if (s->ap_cap & 0x0010) want = LINK_SEC_WEP;
         else want = LINK_SEC_OPEN;
     }
     l->sec = want;
@@ -300,6 +321,16 @@ static int resolve_security(link_t *l)
     case LINK_SEC_OPEN:
         if (ap.rsn || ap.wpa1 || (s->ap_cap & 0x0010)) return jfail(l, "scan", "ap_is_not_open");
         l->pw_cipher = l->grp_cipher = LINK_CIPHER_NONE;
+        break;
+    case LINK_SEC_WEP:
+    case LINK_SEC_WEP_SHARED:
+        if (ap.rsn || ap.wpa1) return jfail(l, "scan", "ap_is_not_wep");
+        if (!(s->ap_cap & 0x0010)) return jfail(l, "scan", "ap_has_no_privacy_bit");
+        if (!l->cfg.key || wep_parse_key(l->cfg.key, s->wep_key, &s->wep_key_len)) return jfail(l, "scan", "bad_wep_key (5/13 ASCII chars or 10/26 hex digits)");
+        if (l->cfg.wep_keyid < 0 || l->cfg.wep_keyid > 3) return jfail(l, "scan", "bad_wep_keyid");
+        s->wep_keyid = l->cfg.wep_keyid;
+        s->auth_algo = want == LINK_SEC_WEP_SHARED;
+        l->pw_cipher = l->grp_cipher = LINK_CIPHER_WEP;
         break;
     case LINK_SEC_WPA2:
         if (!s->rsn_len) return jfail(l, "scan", "ap_has_no_rsn_ie");
@@ -329,7 +360,13 @@ static int join_once(link_t *l)
     if (resolve_security(l)) return -1;
     if (l->sec == LINK_SEC_WPA2) wpa_init(&l->w, l->cfg.key, (const uint8_t *)s->ssid, strlen(s->ssid), s->bssid, s->mac, s->sec_ie, s->sec_ie_len);
     net_init(&l->n, s->mac);
-    if (sta_auth(s)) return jfail_status(l, "auth");
+    int arc = sta_auth(s);
+    if (arc && l->sec == LINK_SEC_WEP && s->auth_algo == 0 && s->last_status == 13) {     // AP wants shared-key auth
+        LOG("open-system auth refused with status 13: trying shared-key");
+        s->auth_algo = 1;
+        arc = sta_auth(s);
+    }
+    if (arc) return jfail_status(l, "auth");
     if (sta_assoc(s)) return jfail_status(l, "assoc");
     l->t_assoc = now_ms();
     LOG("associated aid=%d (elapsed counted from here)", s->aid);

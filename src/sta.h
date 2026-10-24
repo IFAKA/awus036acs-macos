@@ -22,6 +22,8 @@ typedef struct {
     uint8_t rsn[64]; int rsn_len;       // full RSN IE incl. id+len (0 if none)
     uint8_t wpa_ie[96]; int wpa_ie_len; // full WPA1 vendor IE (dd len 00:50:f2:01 ...) incl. id+len (0 if none)
     uint8_t ies[512]; int ies_len;      // raw IE chain of the matched Beacon / Probe Response (for scan_parse_ie)
+    int auth_algo;                      // 0 = open system, 1 = shared key (WEP challenge)
+    uint8_t wep_key[13]; int wep_key_len, wep_keyid; uint32_t wep_iv;   // WEP key (shared-key auth encrypts the challenge with it)
     int hidden;                         // SSID may be hidden: match only Probe Responses to us (or Beacons of a known BSSID)
     uint8_t sec_ie[96]; int sec_ie_len; // security element (RSN or WPA1) copied into the association request
     int rssi;
@@ -35,7 +37,8 @@ typedef struct {
     // internal
     rtl_t *r;
     int rate;                           // mgmt TX rate (Mbps*10)
-    int auth_status, auth_got, assoc_got, assoc_status;
+    int auth_status, auth_got, auth_rx_algo, assoc_got, assoc_status;   // auth_got = transaction sequence number of the last Authentication frame for us (0 = none)
+    uint8_t challenge[128]; int challenge_len;                          // shared-key challenge text from transaction 2
     uint8_t last_hdr_dummy;
     void (*def_cb)(void *ud, const uint8_t *frame, int len, const rtl_frame_t *f);   // used by sta_poll when cb == NULL
     void *def_ud;

@@ -9,6 +9,7 @@
 #include "sta.h"
 #include "mac.h"
 #include "tx.h"
+#include "wep.h"
 
 static long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000L + t.tv_nsec / 1000000L; }
 
@@ -88,8 +89,12 @@ static void on_frame(void *ud, const rtl_frame_t *f)
             s->ies_len = (int)(end - ie) < (int)sizeof s->ies ? (int)(end - ie) : (int)sizeof s->ies;
             memcpy(s->ies, ie, s->ies_len);
             s->ap_seen = 1;
-        } else if (sub == 11 && tome && frombss && len >= 30) {   // auth
-            if ((d[24] | d[25] << 8) == 0 && (d[26] | d[27] << 8) == 2) { s->auth_status = d[28] | d[29] << 8; s->auth_got = 1; }
+        } else if (sub == 11 && tome && frombss && len >= 30) {   // auth (transaction 2 or 4)
+            s->auth_rx_algo = d[24] | d[25] << 8;
+            s->auth_status = d[28] | d[29] << 8;
+            s->challenge_len = 0;
+            if (len >= 32 + 128 && d[30] == 16 && d[31] == 128) { memcpy(s->challenge, d + 32, 128); s->challenge_len = 128; }
+            s->auth_got = d[26] | d[27] << 8;
         } else if (sub == 1 && tome && frombss && len >= 30) {    // assoc response
             s->assoc_status = d[26] | d[27] << 8;
             s->aid = (d[28] | d[29] << 8) & 0x3FFF;
@@ -153,17 +158,54 @@ int sta_scan(sta_t *s, int timeout_ms)
     return s->ap_seen ? 0 : 1;
 }
 
+// Wait for transaction `seq` of our auth exchange (an error status from the AP, e.g. 13 = algorithm not supported, is accepted
+// for any algorithm number: some APs echo 0, some 1).
+static int auth_reply_ok(const sta_t *s, int seq) { return s->auth_got == seq && (s->auth_rx_algo == s->auth_algo || s->auth_status != 0); }
+
+static int sta_auth_shared(sta_t *s)
+{
+    uint8_t fr[24 + 4 + 6 + 2 + 128 + 4 + 8];
+    uint8_t one[30], body[6 + 2 + 128];
+    put_hdr(one, 0xB0, s->bssid, s->mac, s->bssid);
+    one[24] = 1; one[25] = 0; one[26] = 1; one[27] = 0; one[28] = one[29] = 0;
+    s->auth_got = 0;
+    for (int a = 0; a < 5 && !auth_reply_ok(s, 2); a++) {
+        if (rtl_tx_frame(s->r, one, sizeof one, s->rate, 7)) return 2;
+        sta_poll(s, 300, NULL, NULL);
+    }
+    if (!auth_reply_ok(s, 2)) { s->last_status = -1; return 1; }
+    s->last_status = s->auth_status;
+    if (s->auth_status != 0) return 1;
+    if (s->challenge_len != 128) { s->last_status = 15; return 1; }          // no challenge text: treat as challenge failure
+    body[0] = 1; body[1] = 0; body[2] = 3; body[3] = 0; body[4] = body[5] = 0; body[6] = 16; body[7] = 128;
+    memcpy(body + 8, s->challenge, 128);
+    put_hdr(fr, 0xB0, s->bssid, s->mac, s->bssid);
+    fr[1] = 0x40;                                                            // Protected Frame: the body is WEP encrypted
+    uint8_t iv[3]; wep_next_iv(&s->wep_iv, iv);
+    int n = wep_encrypt(s->wep_key, s->wep_key_len, s->wep_keyid, iv, body, sizeof body, fr + 24);
+    if (n < 0) return 2;
+    s->auth_got = 0;
+    for (int a = 0; a < 5 && !auth_reply_ok(s, 4); a++) {
+        if (rtl_tx_frame(s->r, fr, 24 + n, s->rate, 7)) return 2;
+        sta_poll(s, 300, NULL, NULL);
+    }
+    if (!auth_reply_ok(s, 4)) { s->last_status = -1; return 1; }
+    s->last_status = s->auth_status;
+    return s->auth_status != 0;
+}
+
 int sta_auth(sta_t *s)
 {
     uint8_t fr[30];
+    if (s->auth_algo == 1) return sta_auth_shared(s);
     put_hdr(fr, 0xB0, s->bssid, s->mac, s->bssid);
     fr[24] = fr[25] = 0; fr[26] = 1; fr[27] = 0; fr[28] = fr[29] = 0;
     s->auth_got = 0;
-    for (int a = 0; a < 5 && !s->auth_got; a++) {
+    for (int a = 0; a < 5 && !auth_reply_ok(s, 2); a++) {
         if (rtl_tx_frame(s->r, fr, sizeof fr, s->rate, 7)) return 2;
         sta_poll(s, 300, NULL, NULL);
     }
-    if (!s->auth_got) { s->last_status = -1; return 1; }
+    if (!auth_reply_ok(s, 2)) { s->last_status = -1; return 1; }
     s->last_status = s->auth_status;
     return s->auth_status != 0;
 }

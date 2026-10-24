@@ -39,7 +39,7 @@ build/injtest: $(INJTEST_SRC) src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h sr
 .PHONY: injtest
 injtest: build/injtest
 
-STA_SRC = $(subst src/inject.c,src/sta.c src/staconn.c,$(INJ_SRC))
+STA_SRC = $(subst src/inject.c,src/sta.c src/wep.c src/staconn.c,$(INJ_SRC))
 build/staconn: $(STA_SRC) src/sta.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(STA_SRC) $(LIBS)
 .PHONY: staconn
@@ -48,8 +48,8 @@ staconn: build/staconn
 .PHONY: test-wpa
 test-wpa: build/test_wpa
 	./build/test_wpa
-build/test_wpa: src/wpa.c src/wpa.h src/test_wpa.c | build
-	$(CC) -O2 -Wall -o $@ src/wpa.c src/test_wpa.c
+build/test_wpa: src/wpa.c src/wpa.h src/wep.c src/wep.h src/test_wpa.c | build
+	$(CC) -O2 -Wall -o $@ src/wpa.c src/wep.c src/test_wpa.c
 
 .PHONY: test-net
 build/test_net: src/test_net.c src/net.c src/net.h src/tun.c src/tun.h | build
@@ -57,7 +57,7 @@ build/test_net: src/test_net.c src/net.c src/net.h src/tun.c src/tun.h | build
 test-net: build/test_net
 	./build/test_net
 
-WIFI_SRC = $(subst src/inject.c,src/sta.c src/link.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+WIFI_SRC = $(subst src/inject.c,src/sta.c src/wep.c src/link.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
 build/wifi: $(WIFI_SRC) src/link.h src/scanparse.h src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
 .PHONY: wifi
@@ -68,7 +68,12 @@ build/test_scanparse: src/scanparse.c src/scanparse.h src/test_scanparse.c | bui
 	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/scanparse.c src/test_scanparse.c
 test-scanparse: build/test_scanparse
 	./build/test_scanparse
-test: test-wpa test-net test-scanparse
+build/test_wep: src/wep.c src/wep.h src/test_wep.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/wep.c src/test_wep.c
+.PHONY: test-wep
+test-wep: build/test_wep
+	./build/test_wep
+test: test-wpa test-net test-scanparse test-wep
 
 AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/scanparse.c,$(INJ_SRC))
 build/awusctl: $(AWUSCTL_SRC) src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
