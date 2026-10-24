@@ -33,4 +33,9 @@ extern rtl_rx_stats_t rtl_rx_stats;
 // to cb (>= 0; 0 on timeout), or < 0 on USB error.
 int rtl_rx_poll(rtl_t *r, rtl_frame_cb cb, void *ud, int timeout_ms);
 
+// Optional hook called at the start of every rtl_rx_poll (so a long scan / join can keep answering a control socket).
+// It must not call rtl_rx_poll itself. NULL = none.
+extern void (*rtl_rx_idle)(void *ud);
+extern void *rtl_rx_idle_ud;
+
 #endif

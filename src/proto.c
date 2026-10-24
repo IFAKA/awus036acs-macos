@@ -99,3 +99,15 @@ long backoff_ms(int attempt)
     if (attempt >= 5) return 30000;
     return 1000L << attempt;
 }
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+int proto_sock_path(char *out, size_t cap)
+{
+    if (geteuid() == 0) return snprintf(out, cap, "/var/run/awusd.sock") < (int)cap ? 0 : -1;
+    const char *t = getenv("TMPDIR");
+    if (!t || !*t) t = "/tmp";
+    size_t n = strlen(t);
+    return snprintf(out, cap, "%s%sawusd.sock", t, n && t[n - 1] == '/' ? "" : "/") < (int)cap ? 0 : -1;
+}

@@ -31,6 +31,8 @@ int rtl_set_crystal_cap(rtl_t *r, uint8_t cap);
 // Write one TX power index (0..63, 0.5 dB steps) to every rate of path A. rtl_init_phy uses RTL_TXPWR_DEFAULT.
 #define RTL_TXPWR_DEFAULT 0x20
 int rtl_set_tx_power(rtl_t *r, uint8_t idx);
+// Same, and remember it: rtl_set_channel then keeps this index instead of going back to RTL_TXPWR_DEFAULT.
+int rtl_pin_tx_power(rtl_t *r, uint8_t idx);
 
 // ---- table interpreter (exposed for the unit test) ----
 // Walk a generated if/else-if/else/endif table (pairs of uint32). Calls emit(ctx, addr, data) for every entry that

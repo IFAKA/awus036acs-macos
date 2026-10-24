@@ -27,6 +27,8 @@ typedef struct {
     int hidden;                         // SSID may be hidden: match only Probe Responses to us (or Beacons of a known BSSID)
     uint8_t sec_ie[96]; int sec_ie_len; // security element (RSN or WPA1) copied into the association request
     int rssi;
+    // link health (frames from our AP only): last time any frame was heard, average RSSI (dBm, exponential), last RX rate
+    long last_rx_ms; int rssi_avg; unsigned long rssi_n; int rx_rate; unsigned long rx_ap_frames;
     // join result
     int aid, last_status;
     int associated;

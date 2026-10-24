@@ -115,3 +115,21 @@ int tun_configure(const char *ifname, const char *ip, const char *gw, const char
     if (run("/sbin/ifconfig", ifc) != 0) return -1;
     return tun_add_host_route(ifname, gw);
 }
+
+int tun_add_default_split(const char *ifname)
+{
+    if (!valid_if(ifname)) { errno = EINVAL; return -1; }
+    char *a[] = { "route", "-n", "add", "-net", "0.0.0.0/1", "-interface", (char *)ifname, NULL };
+    char *b[] = { "route", "-n", "add", "-net", "128.0.0.0/1", "-interface", (char *)ifname, NULL };
+    if (run("/sbin/route", a)) return -1;
+    return run("/sbin/route", b);
+}
+
+int tun_del_default_split(const char *ifname)
+{
+    if (!valid_if(ifname)) { errno = EINVAL; return -1; }
+    char *a[] = { "route", "-n", "delete", "-net", "0.0.0.0/1", "-interface", (char *)ifname, NULL };
+    char *b[] = { "route", "-n", "delete", "-net", "128.0.0.0/1", "-interface", (char *)ifname, NULL };
+    int e = run("/sbin/route", a);
+    return run("/sbin/route", b) | e;
+}

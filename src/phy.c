@@ -248,6 +248,12 @@ static int rf_config(rtl_t *r)
 }
 
 // ---------------------------------------------------------------- TX power
+int rtl_pin_tx_power(rtl_t *r, uint8_t idx)
+{
+    r->tx_power_pinned = 1;
+    return rtl_set_tx_power(r, idx);
+}
+
 int rtl_set_tx_power(rtl_t *r, uint8_t idx)
 {
     // Path A per-rate TX AGC registers (rTxAGC_A_*_JAguar). One index byte replicated into all four rates of each.
@@ -255,6 +261,7 @@ int rtl_set_tx_power(rtl_t *r, uint8_t idx)
     uint32_t v = (uint32_t)(idx & 0x3F) * 0x01010101u;
     int e = 0;
     for (size_t i = 0; i < sizeof regs / sizeof regs[0]; i++) e |= rtl_w32(r, regs[i], v);
+    if (!e) r->tx_power = idx & 0x3F;
     return e ? -1 : 0;
 }
 
@@ -359,7 +366,8 @@ int rtl_set_channel(rtl_t *r, int channel, int bw20_only)
     e |= rtl_rf_w(r, 0, RR_RF_CHNLBW, BIT(11) | BIT(10), 3);    // RF bandwidth = 20 MHz
 
     // PHY_SetTxPowerLevel8812 replaced by a fixed index for now
-    e |= rtl_set_tx_power(r, RTL_TXPWR_DEFAULT);
+    { uint8_t keep = r->tx_power;                  // a pinned (user-set) index survives channel changes
+      e |= rtl_set_tx_power(r, r->tx_power_pinned ? keep : RTL_TXPWR_DEFAULT); }
     if (!e) r->channel = channel;
     return e ? -1 : 0;
 }

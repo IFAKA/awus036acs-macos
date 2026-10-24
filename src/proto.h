@@ -15,7 +15,7 @@
 
 #define PROTO_LINE 1024
 #define PROTO_MAXPOS 6
-#define PROTO_MAXOPT 12
+#define PROTO_MAXOPT 16
 #define PROTO_VAL 200
 
 typedef struct {
@@ -34,6 +34,8 @@ int proto_enc(char *out, size_t cap, const char *s);
 // Decode %XX in place into out. Returns the length or -1 on a bad escape / overflow / embedded NUL.
 int proto_dec(char *out, size_t cap, const char *s, size_t n);
 
+// Where the daemon listens: /var/run/awusd.sock for root, else $TMPDIR/awusd.sock (or /tmp). Returns 0, -1 if it does not fit.
+int proto_sock_path(char *out, size_t cap);
 // Reconnect delay in ms after attempt consecutive failures (0 = first retry): 1,2,4,8,16 s, then 30 s forever.
 long backoff_ms(int attempt);
 #endif

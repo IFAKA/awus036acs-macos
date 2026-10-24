@@ -72,6 +72,11 @@ static void on_frame(void *ud, const rtl_frame_t *f)
     int len = f->len - 4;                   // strip FCS
     int type = (d[0] >> 2) & 3, sub = d[0] >> 4;
     const uint8_t *a1 = d + 4, *a2 = d + 10;
+    if (s->have_bssid && !memcmp(a2, s->bssid, 6) && (type == 0 || type == 2)) {      // anything transmitted by our AP
+        s->last_rx_ms = now_ms(); s->rx_ap_frames++;
+        if (f->rssi_valid) { s->rssi_avg = s->rssi_n ? (s->rssi_avg * 7 + f->rssi_dbm - 4) / 8 : f->rssi_dbm; s->rssi_n++; }
+        s->rx_rate = f->rate;
+    }
     if (type == 0) {
         int tome = !memcmp(a1, s->mac, 6);
         int frombss = s->have_bssid && !memcmp(a2, s->bssid, 6);

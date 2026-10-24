@@ -14,7 +14,14 @@ typedef struct rtl {
     int verbose;          // 1 = log every register access to stderr
     uint8_t cut;          // chip cut/version number read at init (A=0, B=1, ...)
     int channel;          // last channel set by rtl_set_channel (0 = none)
+    uint8_t tx_power;     // last TX power index written by rtl_set_tx_power (0..63)
+    uint8_t tx_power_pinned; // 1 = rtl_set_channel re-applies tx_power (set by rtl_pin_tx_power)
 } rtl_t;
+
+// USB health, for the daemon: set when a transfer failed because the device is gone (unplug), counts every failed
+// register transfer. Reset by rtl_open.
+extern volatile int rtl_usb_dead;
+extern unsigned long rtl_usb_errors;
 
 int      rtl_open(rtl_t *r);            // open 0bda:0811, claim iface 0. 0 = ok, <0 = error
 void     rtl_close(rtl_t *r);

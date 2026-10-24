@@ -130,7 +130,7 @@ static void t_proto(void)
     CHECK(proto_parse("", &q) == -1 && proto_parse("   ", &q) == -1 && proto_parse("=x", &q) == -1 && proto_parse("Join", &q) == -1);
     CHECK(proto_parse("x %zz", &q) == -1 && proto_parse("x %4", &q) == -1 && proto_parse("x %", &q) == -1 && proto_parse("x %00", &q) == -1);
     CHECK(proto_parse("x a=%G1", &q) == -1);
-    CHECK(proto_parse("x 1 2 3 4 5 6 7", &q) == -1 && proto_parse("x a=1 b=1 c=1 d=1 e=1 f=1 g=1 h=1 i=1 j=1 k=1 l=1 m=1", &q) == -1);
+    CHECK(proto_parse("x 1 2 3 4 5 6 7", &q) == -1 && proto_parse("x a=1 b=1 c=1 d=1 e=1 f=1 g=1 h=1 i=1 j=1 k=1 l=1 m=1 n=1 o=1 p=1 q=1", &q) == -1);
     char big[PROTO_LINE + 8]; memset(big, 'a', sizeof big); big[sizeof big - 1] = 0;
     CHECK(proto_parse(big, &q) == -1);
     char longv[400]; strcpy(longv, "x k="); memset(longv + 4, 'b', 300); longv[304] = 0;

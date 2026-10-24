@@ -24,4 +24,8 @@ int tun_configure(const char *ifname, const char *ip, const char *gw, const char
 /* Needs root. route -n add -host <ip> -interface <ifname>. 0 ok, -1 error.
  * Refuses 0.0.0.0, "default" and anything that is not a dotted quad. */
 int tun_add_host_route(const char *ifname, const char *ip);
+/* Needs root. Send all traffic through the interface as two /1 routes (0.0.0.0/1 and 128.0.0.0/1: more specific than the
+ * default route, which stays untouched). tun_del_default_split removes them. 0 ok, -1 error. */
+int tun_add_default_split(const char *ifname);
+int tun_del_default_split(const char *ifname);
 #endif

@@ -97,8 +97,12 @@ static int parse_buf(rtl_t *r, const uint8_t *buf, int len, rtl_frame_cb cb, voi
     return n;
 }
 
+void (*rtl_rx_idle)(void *ud);
+void *rtl_rx_idle_ud;
+
 int rtl_rx_poll(rtl_t *r, rtl_frame_cb cb, void *ud, int timeout_ms)
 {
+    if (rtl_rx_idle) rtl_rx_idle(rtl_rx_idle_ud);
     static uint8_t buf[RXBUF_SIZE];
     int got = 0;
     int xfer = 0;
@@ -107,6 +111,7 @@ int rtl_rx_poll(rtl_t *r, rtl_frame_cb cb, void *ud, int timeout_ms)
     if (rc < 0 && rc != LIBUSB_ERROR_TIMEOUT && rc != LIBUSB_ERROR_OVERFLOW) {
         fprintf(stderr, "rx: bulk read error %d (%s)\n", rc, libusb_error_name(rc));
         if (rc == LIBUSB_ERROR_PIPE) libusb_clear_halt(r->h, RX_EP);
+        if (rc == LIBUSB_ERROR_NO_DEVICE) rtl_usb_dead = 1;
         return rc;
     }
     rtl_rx_stats.transfers++;

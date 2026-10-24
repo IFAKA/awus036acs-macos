@@ -16,8 +16,12 @@
 #define TIMEOUT_MS   500
 #define RETRIES      3          // the Linux driver retries failed vendor requests too
 
+volatile int rtl_usb_dead;
+unsigned long rtl_usb_errors;
+
 int rtl_open(rtl_t *r) {
     r->ctx = NULL; r->h = NULL;
+    rtl_usb_dead = 0;
     if (libusb_init(&r->ctx) < 0) return -1;
     r->h = libusb_open_device_with_vid_pid(r->ctx, 0x0bda, 0x0811);
     if (!r->h) { libusb_exit(r->ctx); r->ctx = NULL; return -2; }
@@ -40,6 +44,8 @@ static int vread(rtl_t *r, uint16_t addr, uint8_t *buf, uint16_t len) {
         if (n == len) return 0;
     }
     fprintf(stderr, "USB read 0x%04x len %u failed: %d (%s)\n", addr, len, n, n < 0 ? libusb_error_name(n) : "short");
+    rtl_usb_errors++;
+    if (n == LIBUSB_ERROR_NO_DEVICE) rtl_usb_dead = 1;
     return -1;
 }
 
@@ -53,6 +59,8 @@ static int vwrite(rtl_t *r, uint16_t addr, const uint8_t *buf, uint16_t len) {
         if (n == len) return 0;
     }
     fprintf(stderr, "USB write 0x%04x len %u failed: %d (%s)\n", addr, len, n, n < 0 ? libusb_error_name(n) : "short");
+    rtl_usb_errors++;
+    if (n == LIBUSB_ERROR_NO_DEVICE) rtl_usb_dead = 1;
     return -1;
 }
 
