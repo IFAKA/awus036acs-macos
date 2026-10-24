@@ -86,8 +86,15 @@ test-awusd: build/test_awusd
 	./build/test_awusd
 test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd
 
-AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/scanparse.c src/sta.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
-build/awusctl: $(AWUSCTL_SRC) src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/scanlib.c src/country.c src/proto.c src/scanparse.c src/sta.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+build/awusctl: $(AWUSCTL_SRC) src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSCTL_SRC) $(LIBS)
 .PHONY: awusctl
 awusctl: build/awusctl
+
+AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
+build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
+	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)
+.PHONY: awusd
+awusd: build/awusd

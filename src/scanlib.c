@@ -143,11 +143,6 @@ int scan_run(rtl_t *r, scan_t *s, int band, int dwell, int passes, volatile int 
     int list[N24 + N5], nl = 0;
     if (band != 5) for (int i = 0; i < N24; i++) list[nl++] = chan24[i];
     if (band != 2) for (int i = 0; i < N5; i++) list[nl++] = chan5[i];
-    int k = 0;
-    for (int i = 0; i < nl; i++)
-        if (!s->country[0] || country_chan(s->country, list[i]) != CC_BLOCKED) list[k++] = list[i];
-    nl = k;
-    if (!nl) return 0;
     s->sa[0] = 0x02; for (int i = 1; i < 6; i++) s->sa[i] = rand() & 0xFF;     // locally-administered, random, ours only
     for (int i = 0; i < 6; i++) rtl_w8(r, 0x0610 + i, s->sa[i]);
     for (int p = 0; p < passes; p++) {
@@ -155,7 +150,8 @@ int scan_run(rtl_t *r, scan_t *s, int band, int dwell, int passes, volatile int 
             int ch = list[i];
             if (abort && *abort) return 1;
             if ((p || i || r->channel != ch) && rtl_set_channel(r, ch, 1)) return -1;
-            if (!is_dfs(ch)) send_wildcard_probe(r, s->sa);
+            // listen everywhere (receiving is harmless), but only transmit on channels the country allows without radar rules
+            if (!is_dfs(ch) && (!s->country[0] || country_chan(s->country, ch) == CC_OK)) send_wildcard_probe(r, s->sa);
             long t0 = now_ms();
             while (now_ms() - t0 < dwell) {
                 if (abort && *abort) return 1;
