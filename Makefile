@@ -144,3 +144,11 @@ build/pkg-bin/awusctl: $(AWUSCTL_SRC) src/scanlib.h src/country.h src/proto.h
 .PHONY: pkg
 pkg: build/pkg-bin/awusd build/pkg-bin/awusctl app
 	sh packaging/build-pkg.sh
+
+# ---- WPA3-SAE + PMF engine (pure; no USB): Annex J.10 vectors, RFC 4493, python cross-checks, two-instance exchange ----
+build/test_sae: src/sae.c src/sae.h src/wpa3.c src/wpa3.h src/wpa.c src/wpa.h src/wep.c src/test_sae.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/sae.c src/wpa3.c src/wpa.c src/wep.c src/test_sae.c
+.PHONY: test-sae
+test-sae: build/test_sae
+	./build/test_sae
+test: test-sae
