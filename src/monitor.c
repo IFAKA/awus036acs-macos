@@ -11,6 +11,7 @@
 #include "phy.h"
 #include "mac.h"
 #include "rx.h"
+#include "bringup.h"
 #include "pcap.h"
 
 #define MAX_SSIDS 64
@@ -77,24 +78,10 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (!r.verbose) r.verbose = 1;       // log every register access
 
-    int e = rtl_open(&r);
-    if (e) { char b[40]; snprintf(b, sizeof b, "error %d", e); return fail(&r, "open", b); }
+    int e;
     char b[96];
-    if ((e = rtl_power_on(&r))) { snprintf(b, sizeof b, "error %d", e); return fail(&r, "power_on", b); }
-    if ((e = rtl_fw_download(&r))) { snprintf(b, sizeof b, "error %d", e); return fail(&r, "fw_download", b); }
-    fprintf(stderr, "STEP init_phy\n");
-    if ((e = rtl_init_phy(&r))) { snprintf(b, sizeof b, "error %d", e); return fail(&r, "init_phy", b); }
-
-    // sanity: RF 0x18 read back and BB state
-    if ((e = rtl_set_channel(&r, hop ? 1 : ch, 1))) { snprintf(b, sizeof b, "error %d", e); return fail(&r, "set_channel", b); }
-    uint32_t rf18 = rtl_rf_r(&r, 0, 0x18, 0xFFFFF);
-    fprintf(stderr, "SANITY RF 0x18 = 0x%05X (channel byte 0x%02X, want 0x%02X)\n", rf18, rf18 & 0xFF, hop ? 1 : ch);
-    fprintf(stderr, "SANITY BB 0x808=0x%08X 0xC1C=0x%08X 0x860=0x%08X CR=0x%04X\n", rtl_r32(&r, 0x808), rtl_r32(&r, 0xC1C),
-            rtl_r32(&r, 0x860), rtl_r16(&r, 0x100));
-    if ((rf18 & 0xFF) != (uint32_t)(hop ? 1 : ch)) {
-        snprintf(b, sizeof b, "RF 0x18 readback 0x%05X does not match channel", rf18);
-        return fail(&r, "rf_readback", b);
-    }
+    const char *step;
+    if (rtl_bringup(&r, hop ? 1 : ch, &step, b, sizeof b)) return fail(&r, step, b);
     if ((e = rtl_set_monitor(&r))) { snprintf(b, sizeof b, "error %d", e); return fail(&r, "set_monitor", b); }
 
     if (out) {

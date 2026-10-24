@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "rx.h"
+#include "tx.h"
 
 #define RX_EP        0x84
 #define RXBUF_SIZE   (32 * 1024)
@@ -46,6 +47,18 @@ static int parse_buf(rtl_t *r, const uint8_t *buf, int len, rtl_frame_cb cb, voi
         }
         if (BITS(d2, 28, 1)) {                    // RPT_SEL: C2H / firmware report, not a received frame
             rtl_rx_stats.c2h++;
+            const uint8_t *c = buf + RXDESC_SIZE + drv + shift;   // [id][seq][payload]
+            if (r->verbose || getenv("C2HDBG")) {
+                fprintf(stderr, "c2h: len=%d", pkt_len);
+                for (int i = 0; i < pkt_len && i < 16; i++) fprintf(stderr, " %02X", c[i]);
+                fputc('\n', stderr);
+            }
+            if (pkt_len >= 8 && c[0] == 0x03) {              // C2H_CCX_TX_RPT
+                rtl_tx_stats.ccx++;
+                if (c[2] & 0x80) rtl_tx_stats.ccx_retry_over++;
+                else if (c[2] & 0x40) rtl_tx_stats.ccx_life_over++;
+                else rtl_tx_stats.ccx_ok++;
+            }
         } else {
             rtl_frame_t f;
             memset(&f, 0, sizeof f);
