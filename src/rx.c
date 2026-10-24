@@ -62,6 +62,10 @@ static int parse_buf(rtl_t *r, const uint8_t *buf, int len, rtl_frame_cb cb, voi
                 if (c[2] & 0x80) rtl_tx_stats.ccx_retry_over++;
                 else if (c[2] & 0x40) rtl_tx_stats.ccx_life_over++;
                 else rtl_tx_stats.ccx_ok++;
+                int rep_rate = c[7] & 0x7F, rep_retries = c[4] & 0x3F;
+                rtl_tx_stats.ccx_retries += rep_retries;
+                rtl_tx_stats.ccx_rate_hist[rep_rate]++;
+                if (rtl_tx_report_cb) rtl_tx_report_cb(rtl_tx_report_ud, rep_rate, rep_retries, !(c[2] & 0xC0));
             }
         } else {
             rtl_frame_t f;

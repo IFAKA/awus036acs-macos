@@ -205,6 +205,9 @@ static void bench_report(link_t *L, uint32_t peer)
         if (!bench_run(L, peer, 2, g_bench_secs, 1400, atoi(tok), &r))
             fprintf(E, "BENCH down offered %4s -> %7.2f Mbit/s  sent %lu recv %lu loss %ld%%  rx_rate %d bw %d\n", tok, r.mbps, r.sent, r.recv, r.sent ? (long)(100 - 100 * (long)r.recv / (long)r.sent) : 100, r.rx_rate, 0);
     fprintf(E, "BENCH counters: dec_ok %lu dec_fail %lu replay %lu data_rx %lu rx_crc_err %lu frames %lu\n", L->st_dec_ok, L->st_dec_fail, L->st_replay, L->s.data_rx, rtl_rx_stats.crc_err, rtl_rx_stats.frames);
+    fprintf(E, "BENCH tx reports by hw rate:");
+    for (int i = 0; i < 128; i++) if (rtl_tx_stats.ccx_rate_hist[i]) fprintf(E, " %d:%lu", i, rtl_tx_stats.ccx_rate_hist[i]);
+    fprintf(E, " (retries %lu)\n", rtl_tx_stats.ccx_retries);
     fprintf(E, "BENCH rx data frames by hw rate:");
     for (int i = 0; i < 128; i++) if (L->s.rx_rate_hist[i]) fprintf(E, " %d:%lu", i, L->s.rx_rate_hist[i]);
     fprintf(E, "\n");

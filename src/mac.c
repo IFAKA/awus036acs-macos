@@ -8,6 +8,7 @@
 // _InitRetryFunction, init_UsbAggregationSetting (RX/TX aggregation compiled out in our reference config -> off),
 // _InitBeaconParameters, _InitBurstPktLen.
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include "rtl.h"
 #include "mac.h"
@@ -145,7 +146,12 @@ int rtl_init_mac(rtl_t *r)
     W8(0x0420, rtl_r8(r, 0x0420) | BIT(7));       // EN_AMPDU_RTY_NEW
     W8(0x0640, 0x80);
 
-    // init_UsbAggregationSetting: compiled out (no CONFIG_USB_RX_AGGREGATION): leave TRXDMA agg bits as set above.
+    // init_UsbAggregationSetting / usb_AggSettingRxUpdate (RX_AGG_USB): the chip packs several received frames into one bulk
+    // transfer until `size` KB are queued or `timeout` (about 32 us units) passed. rx.c's parser walks every packet in a transfer.
+    if (getenv("AWUS_RXAGG")) {
+        W8(REG_TRXDMA_CTRL, rtl_r8(r, REG_TRXDMA_CTRL) | BIT(2));
+        W16(0x0280, (uint16_t)(0x05 | (0x20 << 8)));
+    }
 
     // _InitBeaconParameters_8812A
     W16(0x0550, 0x1010);                          // BCN_CTRL: DIS_TSF_UDT on both ports

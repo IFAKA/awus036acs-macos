@@ -185,13 +185,31 @@ static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
 }
 
 // ---- data TX ----
+static int tx_rate(link_t *l)
+{
+    if (l->ra_on) l->data_rate = rate_pick(&l->rc, now_ms());      // data_rate shows the rung in use (a probe frame is the exception)
+    return l->data_rate;
+}
+
+static void on_tx_report(void *ud, int hw_rate, int retries, int ok)
+{
+    link_t *l = ud;
+    if (!l->ra_on) return;
+    int was = l->rc.cur;
+    if (rate_report(&l->rc, hw_rate, retries, ok, now_ms())) {
+        l->data_rate = l->rc.code[l->rc.cur];
+        char b1[16], b2[16];
+        LOG("rate adaptation: %s -> %s", caps_rate_str(l->rc.code[was], b1, sizeof b1), caps_rate_str(l->data_rate, b2, sizeof b2));
+    }
+}
+
 static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size_t len)
 {
     link_t *l = ctx;
     uint8_t hdr[24] = {0}, out[2400];
     if (len > 1700) return;
     if (l->pw_cipher == LINK_CIPHER_NONE) {
-        if (sta_send_data(&l->s, dst, payload, (int)len, 0, l->data_rate)) LOG("data tx failed");
+        if (sta_send_data(&l->s, dst, payload, (int)len, 0, tx_rate(l))) LOG("data tx failed");
         return;
     }
     if (l->pw_cipher == LINK_CIPHER_WEP) {
@@ -200,7 +218,7 @@ static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size
         int n = wep_encrypt(l->s.wep_key, l->s.wep_key_len, l->s.wep_keyid, iv, payload, len, out);
         if (n < 0) return;
         l->st_tx_enc++;
-        int rc = sta_send_data(&l->s, dst, out, n, 1, l->data_rate);
+        int rc = sta_send_data(&l->s, dst, out, n, 1, tx_rate(l));
         if (rc) LOG("data tx rc=%d", rc);
         return;
     }
@@ -212,7 +230,7 @@ static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size
         : ccmp_encrypt(wpa_get_tk(&l->w), hdr, 24, l->tx_pn++, 0, payload, len, out);
     if (n < 0) return;
     l->st_tx_enc++;
-    int rc = sta_send_data(&l->s, dst, out, n, 1, l->data_rate);
+    int rc = sta_send_data(&l->s, dst, out, n, 1, tx_rate(l));
     if (rc) LOG("data tx rc=%d", rc);
 }
 
@@ -433,7 +451,16 @@ static void apply_plan(link_t *l)
     if (p->mode == MODE_LEGACY) return;
     if (p->bw && rtl_set_channel_bw(l->r, l->s.channel, p->bw, p->sc)) { LOG("width switch failed, staying at 20 MHz legacy"); l->plan = (tx_plan_t){0}; return; }
     l->r->tx_sgi = p->sgi;
-    if (!l->cfg.data_rate) l->data_rate = p->mode == MODE_VHT ? RATE_VHT(p->max_mcs) : RATE_HT(p->max_mcs);
+    if (!l->cfg.data_rate) {
+        int codes[RATE_MAX], hw[RATE_MAX], n = 0;
+        for (int m = 0; m <= p->max_mcs && n < RATE_MAX; m++) {
+            codes[n] = p->mode == MODE_VHT ? RATE_VHT(m) : RATE_HT(m);
+            hw[n] = rtl_tx_hw_rate(codes[n]); n++;
+        }
+        rate_init(&l->rc, n, codes, hw, n - 1);
+        l->ra_on = 1; l->data_rate = codes[n - 1];
+        rtl_tx_report_cb = on_tx_report; rtl_tx_report_ud = l;
+    }
     LOG("plan: %s bw=%d sc=%d centre=%d top mcs=%d sgi=%d", p->mode == MODE_VHT ? "VHT" : "HT", 20 << p->bw, p->sc, p->center, p->max_mcs, p->sgi);
 }
 
@@ -446,7 +473,7 @@ static int join_once(link_t *l)
     memset(l->gk, 0, sizeof l->gk);
     memset(l->rx_pn, 0, sizeof l->rx_pn); l->tx_pn = 1; l->hs_rate = l->cfg.hs_rate ? l->cfg.hs_rate : 60;
     s->deauth_seen = s->disassoc_seen = 0; s->associated = 0; s->ap_seen = 0;
-    l->plan = (tx_plan_t){0}; s->want_ht = s->want_bw40 = s->want_vht = 0; l->data_rate = l->cfg.data_rate ? l->cfg.data_rate : 60; l->r->tx_sgi = 0;
+    l->plan = (tx_plan_t){0}; l->ra_on = 0; s->want_ht = s->want_bw40 = s->want_vht = 0; l->data_rate = l->cfg.data_rate ? l->cfg.data_rate : 60; l->r->tx_sgi = 0;
     if (l->r->bw && rtl_set_channel_bw(l->r, l->r->channel, 0, 0)) return jfail(l, "channel", "set_channel_failed");
     if (!l->cfg.channel && find_channel(l)) return jfail(l, "scan", "no_probe_response");
     if (s->ap_seen == 0 && sta_scan(s, 4000)) return jfail(l, "scan", "no_probe_response");

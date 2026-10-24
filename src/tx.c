@@ -15,6 +15,8 @@
 #define MGMT_MACID  1
 
 rtl_tx_stats_t rtl_tx_stats;
+void (*rtl_tx_report_cb)(void *ud, int hw_rate, int retries, int ok);
+void *rtl_tx_report_ud;
 
 static void set_bits(uint8_t *d, int byteoff, int lo, int n, uint32_t v)
 {

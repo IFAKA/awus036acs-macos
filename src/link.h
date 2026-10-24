@@ -14,6 +14,7 @@
 #include "sta.h"
 #include "wpa.h"
 #include "net.h"
+#include "rate.h"
 
 typedef enum {
     LINK_SEC_AUTO,          // decide from the AP's own Beacon / Probe Response
@@ -75,6 +76,7 @@ typedef struct link {
     uint8_t mic_rx[8], mic_tx[8];   // pairwise Michael keys (TKIP only)
     uint64_t rx_pn[16];
     struct { int have; uint8_t tk[16]; uint8_t mic_rx[8]; uint64_t pn; } gk[4];
+    rate_ctl_t rc; int ra_on;       // rate adaptation (HT/VHT only, and only when the caller did not pin a rate)
     tx_plan_t plan;                 // negotiated mode / width / top MCS (MODE_LEGACY until the handshake is done)
     ap_caps_t ap_caps;
     uint32_t lease_ip;

@@ -12,8 +12,13 @@
 typedef struct {
     unsigned long submitted, completed, failed;
     unsigned long ccx, ccx_ok, ccx_retry_over, ccx_life_over;   // chip TX reports (C2H 0x03) seen by rx.c
+    unsigned long ccx_retries;                                  // sum of the retry counts of the reports
+    unsigned long ccx_rate_hist[128];                           // reports per final hardware rate code
 } rtl_tx_stats_t;
 extern rtl_tx_stats_t rtl_tx_stats;
+// Called by rx.c for every chip TX report: final hardware rate code, retry count, ok = delivered (0 = retry limit or lifetime over).
+extern void (*rtl_tx_report_cb)(void *ud, int hw_rate, int retries, int ok);
+extern void *rtl_tx_report_ud;
 
 // Send one raw 802.11 frame (no FCS: hardware appends it). rate = Mbps*10: 10,20,55,110 (CCK), 60,90,120,180,240,360,480,540 (OFDM).
 // retries = hardware retry limit (0 = send once; only unicast frames get retried). Returns 0 on success (USB bulk completed
