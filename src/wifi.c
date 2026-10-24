@@ -1,12 +1,17 @@
-// Stage 5B CLI: full WPA2-PSK join (4-way handshake, software CCMP, ARP/DHCP, ICMP ping) without a tun device.
-//   TEST_PSK=... wifi --ssid S [--bssid xx:..] --ch N [--listen SECS] [--ping HOST_IP] [--hs-rate 60|10] [--rate R]
-// The passphrase is read from the environment only. Final line: STAGE5B OK ip=.. gw=.. dns=.. rtt_ms=N | STAGE5B FAIL <step> <reason>.
+// Stage 5B/5C CLI: full WPA2-PSK join (4-way handshake, software CCMP, ARP/DHCP, ICMP ping).
+//   5B (default): join, DHCP, ping. Final line: STAGE5B OK ip=.. gw=.. dns=.. rtt_ms=N | STAGE5B FAIL <step> <reason>.
+//   5C (--tun, needs root): after DHCP, bridge to a utun with host routes only (never the default route).
+// The passphrase is read from the environment only (TEST_PSK or --psk-env NAME), never from argv.
 // Log (no secrets): /tmp/wifi.log
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <arpa/inet.h>
+#include <sys/wait.h>
 #include "rtl.h"
 #include "mac.h"
 #include "tx.h"
@@ -14,6 +19,7 @@
 #include "sta.h"
 #include "wpa.h"
 #include "net.h"
+#include "tun.h"
 
 static long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000L + t.tv_nsec / 1000000L; }
 static long T0;
@@ -145,9 +151,16 @@ static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size
     if (rc) LOG("data tx rc=%d", rc);
 }
 
+static int tun_fd = -1;
+static unsigned long st_tun_rx, st_tun_tx, st_tun_drop;
+
 static void ops_to_tun(void *ctx, const uint8_t *p, size_t len)
 {
     (void)ctx;
+    if (tun_fd >= 0) {
+        if (tun_write(tun_fd, p, len) == 0) st_tun_rx++; else st_tun_drop++;
+        return;
+    }
     if (len < 28 || (p[0] >> 4) != 4) return;
     int ihl = (p[0] & 15) * 4;
     if (p[9] != 1 || (size_t)ihl + 8 > len) return;
@@ -166,6 +179,9 @@ static void ops_lease(void *ctx, const net_lease_t *l, int up)
     else LOG("lease down");
 }
 
+static volatile sig_atomic_t stop_req;
+static void on_sig(int s) { (void)s; stop_req = 1; }
+
 // ---- main loop helpers ----
 static long t_next_null;
 static int pump(int ms)
@@ -175,6 +191,7 @@ static int pump(int ms)
     do {
         sta_poll(&S, 20, NULL, NULL);
         if (S.deauth_seen + S.disassoc_seen != dseen) return -1;
+        if (stop_req) return -1;
         if (handshake_done) {
             net_tick(&N, now_ms(), &OPS);
             if (now_ms() >= t_next_null) { t_next_null = now_ms() + 15000; int rc = sta_send_null(&S); LOG("keepalive null rc=%d", rc); }
@@ -183,7 +200,8 @@ static int pump(int ms)
     return 0;
 }
 
-static void fail(const char *step, const char *reason) { printf("STAGE5B FAIL %s %s\n", step, reason); }
+static const char *stage = "STAGE5B";
+static void fail(const char *step, const char *reason) { printf("%s FAIL %s %s\n", stage, step, reason); }
 
 static void send_ping(int seq)
 {
@@ -210,11 +228,153 @@ static int wait_echo(int seq, int ms)
 
 static void ipstr(char *b, size_t n, uint32_t a) { snprintf(b, n, "%u.%u.%u.%u", a >> 24, (a >> 16) & 255, (a >> 8) & 255, a & 255); }
 
+// ---- join (scan, auth, assoc, 4-way, DHCP). On failure sets jstep/jreason and returns -1. ----
+static const char *psk;
+static char jstep[32], jreason[200];
+static int jfail(const char *step, const char *reason) { snprintf(jstep, sizeof jstep, "%s", step); snprintf(jreason, sizeof jreason, "%s", reason); return -1; }
+static int jfail_status(const char *step)
+{
+    char b[40];
+    if (S.last_status < 0) return jfail(step, "timeout");
+    snprintf(b, sizeof b, "status=%d", S.last_status);
+    return jfail(step, b);
+}
+static const uint8_t our_rsn[] = {48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0};
+
+static int join_once(void)
+{
+    char b[200];
+    // fresh state for every attempt
+    handshake_done = rsn_mismatch = tk_ready = m1_count = 0;
+    memset(gtk_key, 0, sizeof gtk_key); memset(gtk_have, 0, sizeof gtk_have); memset(gtk_pn, 0, sizeof gtk_pn);
+    memset(rx_pn, 0, sizeof rx_pn); tx_pn = 1; hs_rate = 60;
+    S.deauth_seen = S.disassoc_seen = 0; S.associated = 0;
+    if (sta_scan(&S, 4000)) return jfail("scan", "no_probe_response");
+    if (!S.rsn_len) return jfail("scan", "ap_has_no_rsn_ie");
+    LOG("ap bssid=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d", S.bssid[0], S.bssid[1], S.bssid[2], S.bssid[3], S.bssid[4], S.bssid[5], S.rssi);
+    wpa_init(&W, psk, (const uint8_t *)S.ssid, strlen(S.ssid), S.bssid, S.mac, our_rsn, sizeof our_rsn);
+    net_init(&N, S.mac);
+    if (sta_auth(&S)) return jfail_status("auth");
+    if (sta_assoc(&S)) return jfail_status("assoc");
+    t_assoc = now_ms();
+    LOG("associated aid=%d (elapsed counted from here)", S.aid);
+    printf("assoc aid=%d\n", S.aid);
+
+    int dseen = S.deauth_seen + S.disassoc_seen;
+    long end = now_ms() + 10000;
+    while (now_ms() < end && !handshake_done && !rsn_mismatch && !stop_req && S.deauth_seen + S.disassoc_seen == dseen)
+        sta_poll(&S, 50, NULL, NULL);
+    if (stop_req) return jfail("interrupted", "signal");
+    if (rsn_mismatch) return jfail("handshake", "rsn_ie_mismatch");
+    if (S.deauth_seen + S.disassoc_seen != dseen) {
+        snprintf(b, sizeof b, "ap_%s reason=%d m1_seen=%d state=%d", S.deauth_seen ? "deauth" : "disassoc", S.deauth_seen ? S.deauth_reason : S.disassoc_reason, m1_count, W.state);
+        return jfail("handshake", b);
+    }
+    if (!handshake_done) {
+        snprintf(b, sizeof b, "timeout m1_seen=%d state=%d eapol_rx=%lu", m1_count, W.state, S.eapol_rx);
+        return jfail("handshake", b);
+    }
+    printf("handshake ok: M1 rx at %ldms, M4 tx at %ldms (since start)\n", t_m1 - T0, t_hs - T0);
+    t_next_null = now_ms() + 15000;
+
+    net_dhcp_start(&N, now_ms(), &OPS);
+    end = now_ms() + 20000;
+    while (now_ms() < end && !N.configured) if (pump(20) < 0) break;
+    if (stop_req) return jfail("interrupted", "signal");
+    if (S.deauth_seen + S.disassoc_seen) { snprintf(b, sizeof b, "ap_deauth reason=%d", S.deauth_seen ? S.deauth_reason : S.disassoc_reason); return jfail("dhcp", b); }
+    if (!N.configured) {
+        snprintf(b, sizeof b, "timeout dec_ok=%lu dec_fail=%lu tx_enc=%lu", st_dec_ok, st_dec_fail, st_tx_enc);
+        return jfail("dhcp", b);
+    }
+    return 0;
+}
+
+// Whole-join retry: up to 3 attempts, 1 s apart, on scan/auth/assoc/handshake failures. Not retried: DHCP, RSN mismatch, no RSN IE, signals.
+static int join_retry(void)
+{
+    for (int a = 1; a <= 3 && !stop_req; a++) {
+        if (join_once() == 0) return 0;
+        int retryable = !strcmp(jstep, "scan") ? !strcmp(jreason, "no_probe_response")
+                      : (!strcmp(jstep, "auth") || !strcmp(jstep, "assoc"))
+                      || (!strcmp(jstep, "handshake") && strcmp(jreason, "rsn_ie_mismatch"));
+        printf("join attempt %d/3 failed: %s %s\n", a, jstep, jreason);
+        if (a == 3 || !retryable) return -1;
+        sleep(1);
+    }
+    return -1;
+}
+
+// ---- routes (fork/exec, no shell) ----
+#define MAX_ROUTES 16
+static char route_ip[MAX_ROUTES][16]; static int nroutes;
+static char tun_name[16];
+
+static int valid_dq(const char *s)
+{
+    struct in_addr a; unsigned x[4]; char tail;
+    if (!s || strlen(s) > 15 || sscanf(s, "%u.%u.%u.%u%c", &x[0], &x[1], &x[2], &x[3], &tail) != 4) return 0;
+    return inet_pton(AF_INET, s, &a) == 1 && a.s_addr != 0;
+}
+
+static void add_route(const char *ip)
+{
+    if (nroutes >= MAX_ROUTES) return;
+    if (tun_add_host_route(tun_name, ip) == 0) { snprintf(route_ip[nroutes++], 16, "%s", ip); printf("route add -host %s -interface %s\n", ip, tun_name); }
+    else printf("route add %s FAILED\n", ip);
+}
+
+static void del_routes(void)
+{
+    for (int i = 0; i < nroutes; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            char *argv[] = { "route", "-n", "delete", "-host", route_ip[i], "-interface", tun_name, NULL };
+            execv("/sbin/route", argv); _exit(127);
+        }
+        if (pid > 0) { int st; while (waitpid(pid, &st, 0) < 0 && errno == EINTR) ; }
+        printf("route delete -host %s -interface %s\n", route_ip[i], tun_name);
+    }
+    nroutes = 0;
+}
+
+static void usage(FILE *o)
+{
+    fprintf(o,
+        "usage: wifi --ssid S --ch N [--bssid xx:xx:xx:xx:xx:xx] [--psk-env NAME] [options]\n"
+        "  The passphrase is read ONLY from the environment: TEST_PSK, or the variable named by --psk-env.\n"
+        "  It is never accepted on the command line and never logged.\n"
+        "options:\n"
+        "  --listen SECS     (non-tun) stay associated SECS seconds after the ping test\n"
+        "  --ping IP         (non-tun) ping IP instead of the gateway\n"
+        "  --hs-rate 60|10, --rate R   TX rates (advanced)\n"
+        "  --tun             (root) after DHCP open a utun, give it our IP, bridge frames both ways\n"
+        "  --route IP        (with --tun, repeatable) add a host route for IP via the utun\n"
+        "                    The default route and other interfaces are never touched.\n"
+        "  --help            this text\n"
+        "log (no secrets): /tmp/wifi.log\n"
+        "\ncommands to type:\n"
+        "  1) no root, join + ping gateway (prints STAGE5B OK):\n"
+        "     . /tmp/awus-test.env && ./build/wifi --ssid \"$TEST_SSID\" --bssid aa:bb:cc:dd:ee:ff --ch 7\n"
+        "  2) root, tunnel; routes only for the gateway and 1.1.1.1; stop with Ctrl-C:\n"
+        "     . /tmp/awus-test.env && sudo --preserve-env=TEST_PSK ./build/wifi --tun --ssid \"$TEST_SSID\" --bssid aa:bb:cc:dd:ee:ff --ch 7 --route 1.1.1.1\n"
+        "     then in another terminal:  ping -c 3 1.1.1.1     (and: ping -c 3 <gateway ip>)\n"
+        "     Ctrl-C removes the routes it added and closes the utun.\n");
+}
+
+static void print_stats(void)
+{
+    LOG("stats: dec_ok=%lu dec_fail=%lu replay=%lu no_key=%lu clear_drop=%lu tx_enc=%lu data_rx=%lu prot_rx=%lu group_rx=%lu tun_rx=%lu tun_tx=%lu tun_drop=%lu", st_dec_ok, st_dec_fail, st_replay, st_no_key,
+        st_clear_drop, st_tx_enc, S.data_rx, S.prot_rx, S.group_rx, st_tun_rx, st_tun_tx, st_tun_drop);
+    printf("tx: usb_completed=%lu chip_tx_reports=%lu ok=%lu retry_over=%lu\n", rtl_tx_stats.completed, rtl_tx_stats.ccx, rtl_tx_stats.ccx_ok, rtl_tx_stats.ccx_retry_over);
+}
+
 int main(int argc, char **argv)
 {
-    const char *ssid = NULL, *ping_host = NULL; uint8_t bssid[6]; int have_b = 0, ch = 0, listen = 0;
+    const char *ssid = NULL, *ping_host = NULL, *psk_env = "TEST_PSK"; uint8_t bssid[6]; int have_b = 0, ch = 0, listen = 0, tun_mode = 0, nuser = 0;
+    char user_routes[MAX_ROUTES][16];
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--ssid") && i + 1 < argc) ssid = argv[++i];
+        if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) { usage(stdout); return 0; }
+        else if (!strcmp(argv[i], "--ssid") && i + 1 < argc) ssid = argv[++i];
         else if (!strcmp(argv[i], "--bssid") && i + 1 < argc)
             have_b = sscanf(argv[++i], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]) == 6;
         else if (!strcmp(argv[i], "--ch") && i + 1 < argc) ch = atoi(argv[++i]);
@@ -222,11 +382,22 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--ping") && i + 1 < argc) ping_host = argv[++i];
         else if (!strcmp(argv[i], "--hs-rate") && i + 1 < argc) hs_rate = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--rate") && i + 1 < argc) data_rate = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--psk-env") && i + 1 < argc) psk_env = argv[++i];
+        else if (!strcmp(argv[i], "--tun")) tun_mode = 1;
+        else if (!strcmp(argv[i], "--route") && i + 1 < argc) {
+            const char *ip = argv[++i];
+            if (!valid_dq(ip) || nuser >= MAX_ROUTES - 1) { fprintf(stderr, "bad --route %s (need a dotted-quad IPv4, max %d)\n", ip, MAX_ROUTES - 1); return 2; }
+            snprintf(user_routes[nuser++], 16, "%s", ip);
+        } else { fprintf(stderr, "unknown or incomplete option: %s\n", argv[i]); usage(stderr); return 2; }
     }
-    const char *psk = getenv("TEST_PSK");
-    if (!ssid || !ch || !psk || !*psk) { fprintf(stderr, "usage: TEST_PSK=... wifi --ssid S [--bssid xx:..] --ch N [--listen SECS] [--ping IP]\n"); return 2; }
+    if (nuser && !tun_mode) { fprintf(stderr, "--route needs --tun\n"); return 2; }
+    psk = getenv(psk_env);
+    if (!ssid || !ch || !psk || !*psk) { fprintf(stderr, "missing --ssid/--ch or empty passphrase variable %s (see --help)\n", psk_env); return 2; }
+    if (tun_mode) stage = "STAGE5C";
     if (!freopen("/tmp/wifi.log", "w", stderr)) return 2;
     setvbuf(stderr, NULL, _IOLBF, 0); setvbuf(stdout, NULL, _IOLBF, 0);
+    struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_handler = on_sig; sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
     T0 = now_ms();
     rtl_t r = {0};
     r.verbose = 1;
@@ -238,54 +409,64 @@ int main(int argc, char **argv)
     sta_init(&S, &r, ssid, have_b ? bssid : NULL, ch);
     S.def_cb = on_data;
     LOG("sa=%02x:%02x:%02x:%02x:%02x:%02x", S.mac[0], S.mac[1], S.mac[2], S.mac[3], S.mac[4], S.mac[5]);
-    if (sta_scan(&S, 4000)) { fail("scan", "no_probe_response"); goto out; }
-    if (!S.rsn_len) { fail("scan", "ap_has_no_rsn_ie"); goto out; }
-    LOG("ap bssid=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d", S.bssid[0], S.bssid[1], S.bssid[2], S.bssid[3], S.bssid[4], S.bssid[5], S.rssi);
-    // our RSN IE (identical to the one sta_assoc sends): CCMP/CCMP/PSK, no caps
-    static const uint8_t our_rsn[] = {48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0};
-    wpa_init(&W, psk, (const uint8_t *)S.ssid, strlen(S.ssid), S.bssid, S.mac, our_rsn, sizeof our_rsn);
-    net_init(&N, S.mac);
     OPS = (net_ops_t){ .ctx = NULL, .tx = ops_tx, .to_tun = ops_to_tun, .lease = ops_lease };
-    if (sta_auth(&S)) { fail("auth", S.last_status < 0 ? "timeout" : (snprintf(b, sizeof b, "status=%d", S.last_status), b)); goto out; }
-    if (sta_assoc(&S)) { fail("assoc", S.last_status < 0 ? "timeout" : (snprintf(b, sizeof b, "status=%d", S.last_status), b)); goto out; }
-    t_assoc = now_ms();
-    LOG("associated aid=%d (elapsed counted from here)", S.aid);
-    printf("assoc aid=%d\n", S.aid);
+    char ips[20], gws[20], masks[20], dnss[80] = "";
+    if (join_retry()) { fail(jstep, jreason); goto out; }
 
-    // 4-way handshake
-    {
-        int dseen = S.deauth_seen + S.disassoc_seen;
-        long end = now_ms() + 10000;
-        while (now_ms() < end && !handshake_done && !rsn_mismatch && S.deauth_seen + S.disassoc_seen == dseen)
-            sta_poll(&S, 50, NULL, NULL);
-        if (rsn_mismatch) { fail("handshake", "rsn_ie_mismatch"); goto out; }
-        if (S.deauth_seen + S.disassoc_seen != dseen) {
-            snprintf(b, sizeof b, "ap_%s reason=%d m1_seen=%d state=%d", S.deauth_seen ? "deauth" : "disassoc", S.deauth_seen ? S.deauth_reason : S.disassoc_reason, m1_count, W.state);
-            fail("handshake", b); goto out;
-        }
-        if (!handshake_done) {
-            snprintf(b, sizeof b, "timeout m1_seen=%d state=%d eapol_rx=%lu", m1_count, W.state, S.eapol_rx);
-            fail("handshake", b); goto out;
-        }
-        printf("handshake ok: M1 rx at %ldms, M4 tx at %ldms (since start)\n", t_m1 - T0, t_hs - T0);
-    }
-    t_next_null = now_ms() + 15000;
-
-    // DHCP
-    net_dhcp_start(&N, now_ms(), &OPS);
-    {
-        long end = now_ms() + 20000;
-        while (now_ms() < end && !N.configured) if (pump(20) < 0) break;
-        if (S.deauth_seen + S.disassoc_seen) { snprintf(b, sizeof b, "ap_deauth reason=%d", S.deauth_seen ? S.deauth_reason : S.disassoc_reason); fail("dhcp", b); goto out; }
-        if (!N.configured) {
-            snprintf(b, sizeof b, "timeout dec_ok=%lu dec_fail=%lu tx_enc=%lu", st_dec_ok, st_dec_fail, st_tx_enc);
-            fail("dhcp", b); goto out;
-        }
-    }
-    char ips[20], gws[20], dnss[80] = "";
-    ipstr(ips, sizeof ips, N.lease.ip); ipstr(gws, sizeof gws, N.lease.gw);
+    ipstr(ips, sizeof ips, N.lease.ip); ipstr(gws, sizeof gws, N.lease.gw); ipstr(masks, sizeof masks, N.lease.mask);
     for (int i = 0; i < N.lease.ndns; i++) { char t[20]; ipstr(t, sizeof t, N.lease.dns[i]); strncat(dnss, i ? "," : "", sizeof dnss - strlen(dnss) - 1); strncat(dnss, t, sizeof dnss - strlen(dnss) - 1); }
     printf("dhcp lease ip=%s gw=%s dns=%s\n", ips, gws, dnss);
+
+    if (tun_mode) {
+        uint8_t pkt[2048]; int rejoins = 0;
+        tun_fd = tun_open(tun_name);
+        if (tun_fd < 0) {
+            int e = errno;
+            snprintf(b, sizeof b, "%s%s", strerror(e), e == EPERM ? " (run with sudo)" : "");
+            fail("tun_open", b); goto out;
+        }
+        if (tun_configure(tun_name, ips, gws, masks)) { fail("tun_configure", "ifconfig/route failed (needs root)"); goto out; }
+        printf("route add -host %s -interface %s (by tun_configure)\n", gws, tun_name);
+        snprintf(route_ip[nroutes++], 16, "%s", gws);
+        for (int i = 0; i < nuser; i++) { if (strcmp(user_routes[i], gws)) add_route(user_routes[i]); }
+        printf("TUN UP %s ip=%s gw=%s\n", tun_name, ips, gws);
+
+        while (!stop_req) {
+            sta_poll(&S, 10, NULL, NULL);
+            for (int k = 0; k < 16; k++) {
+                int n = tun_read(tun_fd, pkt, sizeof pkt);
+                if (n < 0) break;
+                if (n == 0) continue;
+                if (net_tx_ip(&N, pkt, n, now_ms(), &OPS) == 0) st_tun_tx++; else st_tun_drop++;
+            }
+            net_tick(&N, now_ms(), &OPS);
+            if (now_ms() >= t_next_null) { t_next_null = now_ms() + 15000; int rc = sta_send_null(&S); LOG("keepalive null rc=%d", rc); }
+            if (S.deauth_seen + S.disassoc_seen) {
+                printf("AP %s reason=%d: re-joining\n", S.deauth_seen ? "deauth" : "disassoc", S.deauth_seen ? S.deauth_reason : S.disassoc_reason);
+                int ok = 0;
+                while (!stop_req && rejoins < 3) {
+                    rejoins++;
+                    printf("rejoin %d/3\n", rejoins);
+                    if (join_once() == 0) { ok = 1; break; }
+                    printf("rejoin %d/3 failed: %s %s\n", rejoins, jstep, jreason);
+                    sleep(1);
+                }
+                if (stop_req) break;
+                if (!ok) { fail("rejoin", "gave up after 3 attempts"); goto out; }
+                rejoins = 0;
+                char nip[20]; ipstr(nip, sizeof nip, N.lease.ip);
+                if (strcmp(nip, ips)) {
+                    printf("lease changed %s -> %s; reconfiguring %s\n", ips, nip, tun_name);
+                    snprintf(ips, sizeof ips, "%s", nip);
+                    if (tun_configure(tun_name, ips, gws, masks)) { fail("tun_configure", "reconfigure failed"); goto out; }
+                }
+                printf("rejoined ip=%s gw=%s\n", ips, gws);
+            }
+        }
+        printf("%s DONE (signal)\n", stage);
+        ret = 0;
+        goto out;
+    }
 
     // ICMP echo to the gateway (or --ping host)
     ping_target = N.lease.gw;
@@ -318,9 +499,8 @@ int main(int argc, char **argv)
         printf("listen done assoc=%d\n", S.associated);
     }
 out:
-    LOG("stats: dec_ok=%lu dec_fail=%lu replay=%lu no_key=%lu clear_drop=%lu tx_enc=%lu data_rx=%lu prot_rx=%lu group_rx=%lu", st_dec_ok, st_dec_fail, st_replay, st_no_key,
-        st_clear_drop, st_tx_enc, S.data_rx, S.prot_rx, S.group_rx);
-    printf("tx: usb_completed=%lu chip_tx_reports=%lu ok=%lu retry_over=%lu\n", rtl_tx_stats.completed, rtl_tx_stats.ccx, rtl_tx_stats.ccx_ok, rtl_tx_stats.ccx_retry_over);
+    if (tun_fd >= 0) { del_routes(); close(tun_fd); tun_fd = -1; }
+    print_stats();
     rtl_close(&r);
     return ret;
 }
