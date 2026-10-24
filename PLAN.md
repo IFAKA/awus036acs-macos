@@ -24,3 +24,4 @@ Goal: use the adapter natively on this Mac (no VM).
   Changed: src/phy.c (mac_misc moved to mac.c, rtl_init_phy calls rtl_init_mac; rtl_set_channel stores r->channel), src/rtl.h (rtl_t.channel appended), Makefile (monitor), test_phy build line.
   Findings: the phy.c as written worked on first run on the real chip: RF 0x18 readback after set_channel(6) = 0x07C06 (channel byte matches), no change needed to rtl_rf_r.
   Every frame received had a valid trailing FCS (CRC32 checked in rx.c) once APPFCS was set; without it pkt_len excludes the FCS. USB RX aggregation left off (one frame per bulk transfer).
+- 2026-10-24 stages 2-5 DONE: build/wifi --tun brings up utun9; ping gw + 1.1.1.1 over the adapter, 0% loss. Open: LED, 5GHz, throughput, long-run stability, WPA3.
