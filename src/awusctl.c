@@ -191,7 +191,7 @@ static int cmd_scan_direct(const char *band_s, int dwell, int passes, int json, 
 static volatile sig_atomic_t stop_req;
 static void on_sig(int s) { (void)s; stop_req = 1; }
 
-static int g_bench, g_bench_secs = 5, g_legacy;
+static int g_bench, g_bench_secs = 5, g_legacy, g_maxbw, g_rate, g_vht;
 static const char *g_bench_down = "10,20,40,80";
 
 static void bench_report(link_t *L, uint32_t peer)
@@ -204,6 +204,10 @@ static void bench_report(link_t *L, uint32_t peer)
     for (tok = strtok_r(d, ",", &sv); tok; tok = strtok_r(NULL, ",", &sv))
         if (!bench_run(L, peer, 2, g_bench_secs, 1400, atoi(tok), &r))
             fprintf(E, "BENCH down offered %4s -> %7.2f Mbit/s  sent %lu recv %lu loss %ld%%  rx_rate %d bw %d\n", tok, r.mbps, r.sent, r.recv, r.sent ? (long)(100 - 100 * (long)r.recv / (long)r.sent) : 100, r.rx_rate, 0);
+    fprintf(E, "BENCH counters: dec_ok %lu dec_fail %lu replay %lu data_rx %lu rx_crc_err %lu frames %lu\n", L->st_dec_ok, L->st_dec_fail, L->st_replay, L->s.data_rx, rtl_rx_stats.crc_err, rtl_rx_stats.frames);
+    fprintf(E, "BENCH rx data frames by hw rate:");
+    for (int i = 0; i < 128; i++) if (L->s.rx_rate_hist[i]) fprintf(E, " %d:%lu", i, L->s.rx_rate_hist[i]);
+    fprintf(E, "\n");
     free(d);
 }
 
@@ -239,7 +243,7 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
     static link_t L;
     link_init(&L, &r);
     L.out = E; L.stop = &stop_req;
-    link_cfg_t cfg = { .ssid = ssid, .bssid = have_b ? bssid : NULL, .channel = ch, .hidden = hidden, .sec = sec, .key = key, .wep_keyid = keyid };
+    link_cfg_t cfg = { .ssid = ssid, .bssid = have_b ? bssid : NULL, .channel = ch, .hidden = hidden, .sec = sec, .key = key, .wep_keyid = keyid, .legacy = g_legacy, .max_bw = g_maxbw, .data_rate = g_rate, .vht = g_vht };
     int rc = 1;
     if (link_join(&r, &cfg, &L)) { fprintf(E, "join FAIL %s %s\n", L.fail_step, L.fail_reason); goto out; }
     char ips[20], gws[20];
@@ -270,7 +274,7 @@ static int usage(FILE *o)
 "  scan [--band 2|5|all] [--dwell MS] [--passes N] [--json] [--country CC (direct mode)]\n"
 "  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|auto] [--key-env VAR]\n"
 "       [--wep-keyid N] [--default-route]     with the daemon: connect and stay; without: join, ping 6x, leave\n"
-"  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates]   goodput test (no daemon)\n"
+"  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates] [--bw 20|40|80]   goodput test (no daemon)\n"
 "  leave                          disconnect and stop auto-join until join / autojoin on / profile add\n"
 "  ping [--host IP] [--count N]   ping the gateway (or IP) from the daemon's link\n"
 "  rf on|off                      radio on/off (off: deauth, RF block disabled, LED off)\n"
@@ -319,6 +323,9 @@ int main(int argc, char **argv)
         else if (OPT("--sock")) snprintf(sockpath, sizeof sockpath, "%s", argv[++i]);
         else if (OPT("--secs")) g_bench_secs = atoi(argv[++i]);
         else if (OPT("--down")) g_bench_down = argv[++i];
+        else if (OPT("--bw")) g_maxbw = atoi(argv[++i]);
+        else if (!strcmp(a, "--vht")) g_vht = 1;
+        else if (OPT("--rate")) g_rate = atoi(argv[++i]);
         else if (!strcmp(a, "--legacy-rates")) g_legacy = 1;
         else if (!strcmp(a, "--hidden")) hidden = 1;
         else if (!strcmp(a, "--json")) json = 1;

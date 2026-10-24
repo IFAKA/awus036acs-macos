@@ -135,6 +135,7 @@ static void on_frame(void *ud, const rtl_frame_t *f)
     if (len < hl) return;
     if (sub & 4) return;                    // null / qos-null: no payload
     s->data_rx++;
+    if (f->rate >= 0 && f->rate < 128) s->rx_rate_hist[f->rate]++;
     if (group) s->group_rx++;
     if (d[1] & 0x40) {
         s->prot_rx++;
@@ -280,6 +281,11 @@ int sta_assoc(sta_t *s)
     if (s->nrates) { fr[n++] = 1; fr[n++] = s->nrates; memcpy(fr + n, s->rates, s->nrates); n += s->nrates; }
     if (s->nxrates) { fr[n++] = 50; fr[n++] = s->nxrates; memcpy(fr + n, s->xrates, s->nxrates); n += s->nxrates; }
     if (s->sec_ie_len) { memcpy(fr + n, s->sec_ie, s->sec_ie_len); n += s->sec_ie_len; }
+    if (s->want_ht) {
+        n += caps_build_ht_cap(fr + n, s->want_bw40, s->channel <= 14);
+        if (s->channel > 14 && s->want_vht) n += caps_build_vht_cap(fr + n);
+        n += caps_build_wmm(fr + n);
+    }
     s->assoc_got = 0;
     for (int a = 0; a < 5 && !s->assoc_got; a++) {
         if (tx_mgmt(s, fr, n, s->rate, 7, 1) == 2) return 2;

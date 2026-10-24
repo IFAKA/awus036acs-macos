@@ -98,6 +98,32 @@ int main(void)
         CHECK(rtl_set_channel(&r, 15, 1) < 0);
         CHECK(rtl_set_channel(&r, 6, 0) < 0);
     }
+    // width: centre channels and register fields
+    {
+        int ix = -1;
+        CHECK(rtl_center_channel(6, 0, 0, NULL) == 6);
+        CHECK(rtl_center_channel(36, 1, 1, NULL) == 38 && rtl_center_channel(40, 1, 3, NULL) == 38);
+        CHECK(rtl_center_channel(1, 1, 0, NULL) == 0);
+        CHECK(rtl_center_channel(36, 2, 0, &ix) == 42 && ix == 0);
+        CHECK(rtl_center_channel(48, 2, 0, &ix) == 42 && ix == 3);
+        CHECK(rtl_center_channel(132, 2, 0, &ix) == 138 && ix == 0);
+        CHECK(rtl_center_channel(144, 2, 0, &ix) == 138 && ix == 3);
+        CHECK(rtl_center_channel(149, 2, 0, &ix) == 155 && ix == 0);
+        CHECK(rtl_center_channel(165, 2, 0, &ix) == 171);
+        CHECK(rtl_center_channel(6, 2, 0, &ix) == 0 && rtl_center_channel(34, 2, 0, &ix) == 0 && rtl_center_channel(138, 2, 0, &ix) == 0);
+        rtl_t r; memset(&r, 0, sizeof r);
+        memset(regs, 0, sizeof regs);
+        CHECK(rtl_set_channel_bw(&r, 132, 2, 0) == 0);
+        CHECK((regs[0x668] | regs[0x669] << 8) >> 7 == 2);        // 0x668 bits 8:7 = 10 -> 80 MHz
+        CHECK(regs[0x483] == (4 | (10 << 4)));                     // primary is the lowest 20 of the lower 40 of the 80
+        CHECK(r.bw == 2 && r.center == 138 && r.channel == 132);
+        CHECK(rtl_set_channel_bw(&r, 36, 1, 1) == 0);
+        CHECK(((regs[0x668] | regs[0x669] << 8) >> 7 & 3) == 1);
+        CHECK(regs[0x483] == 2 && r.center == 38);                 // secondary above: primary is the lower 20
+        CHECK(rtl_set_channel_bw(&r, 6, 1, 3) == 0 && r.center == 4 && regs[0x483] == 1);
+        CHECK(rtl_set_channel_bw(&r, 6, 2, 0) < 0);
+        CHECK(rtl_set_channel_bw(&r, 36, 0, 0) == 0 && regs[0x483] == 0 && ((regs[0x668] | regs[0x669] << 8) >> 7 & 3) == 0);
+    }
     printf(fails ? "FAILED (%d)\n" : "ALL OK\n", fails);
     return fails != 0;
 }

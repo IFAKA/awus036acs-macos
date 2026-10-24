@@ -16,6 +16,8 @@ typedef struct rtl {
     int channel;          // last channel set by rtl_set_channel (0 = none)
     uint8_t tx_power;     // last TX power index written by rtl_set_tx_power (0..63)
     uint8_t tx_power_pinned; // 1 = rtl_set_channel re-applies tx_power (set by rtl_pin_tx_power)
+    int bw, center, sc, idx80;  // radio width (0 = 20, 1 = 40, 2 = 80 MHz), centre channel, HT secondary offset, position in the 80 MHz block
+    int tx_sgi;           // data frames: short guard interval
 } rtl_t;
 
 // USB health, for the daemon: set when a transfer failed because the device is gone (unplug), counts every failed

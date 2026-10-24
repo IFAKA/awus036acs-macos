@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "tx.h"
+#include "phy.h"
 
 #define TXDESC_SIZE 40
 #define QSLT_MGNT   0x12
@@ -33,9 +34,17 @@ static int hw_rate(int rate)
     return -1;
 }
 
-static int build_desc(uint8_t *d, int len, int rate, int retries, int bmc, int qsel)
+// Hardware rate code for a rate value: legacy Mbps*10, HT 1000+mcs (MCS0-7 = 12..19), VHT 2000+mcs (NSS1 MCS0-9 = 44..53).
+int rtl_tx_hw_rate(int rate)
 {
-    int hr = hw_rate(rate);
+    if (rate >= 2000) return rate <= 2009 ? 44 + (rate - 2000) : -1;
+    if (rate >= 1000) return rate <= 1007 ? 12 + (rate - 1000) : -1;
+    return hw_rate(rate);
+}
+
+static int build_desc(rtl_t *r, uint8_t *d, int len, int rate, int retries, int bmc, int qsel)
+{
+    int hr = rtl_tx_hw_rate(rate);
     if (hr < 0) return -1;
     memset(d, 0, TXDESC_SIZE);
     // dword 0
@@ -49,7 +58,7 @@ static int build_desc(uint8_t *d, int len, int rate, int retries, int bmc, int q
     set_bits(d, 4, 0, 7, MGMT_MACID);
     set_bits(d, 4, 8, 5, qsel);
     if (qsel != QSLT_MGNT) set_bits(d, 8, 16, 1, 1);   // AGG_BREAK for data
-    set_bits(d, 4, 16, 5, rate <= 110 ? RATEID_B : RATEID_G);
+    set_bits(d, 4, 16, 5, rate <= 110 ? RATEID_B : RATEID_G);   // (fixed rate is used, so the rate id only matters for fallback)
     // dword 2: SPE_RPT -> ask the chip for a C2H TX report
     set_bits(d, 8, 19, 1, 1);
     // dword 3
@@ -59,6 +68,12 @@ static int build_desc(uint8_t *d, int len, int rate, int retries, int bmc, int q
     set_bits(d, 16, 0, 7, hr);                        // TX_RATE
     set_bits(d, 16, 17, 1, 1);                        // RETRY_LIMIT_ENABLE
     set_bits(d, 16, 18, 6, retries & 0x3F);           // DATA_RETRY_LIMIT
+    // dword 5: width, sub-channel, short GI (only for HT/VHT rates on a data frame)
+    if (r && rate >= 1000 && qsel != QSLT_MGNT) {
+        set_bits(d, 20, 5, 2, r->bw);                 // DATA_BW
+        if (r->bw) set_bits(d, 20, 0, 4, rtl_sub_chnl(r->bw, r->sc, r->idx80) & 0xF);   // DATA_SC
+        set_bits(d, 20, 4, 1, r->tx_sgi);             // DATA_SHORT (short guard interval)
+    }
     // dword 8: HWSEQ_EN (+32 bit 15): hardware assigns the sequence number
     set_bits(d, 32, 15, 1, 1);
     // checksum: xor of the first 16 16-bit words with the checksum field cleared
@@ -70,7 +85,7 @@ static int build_desc(uint8_t *d, int len, int rate, int retries, int bmc, int q
 
 int rtl_tx_build_desc(uint8_t *d, int len, int rate, int retries, int bmc)
 {
-    return build_desc(d, len, rate, retries, bmc, QSLT_MGNT);
+    return build_desc(NULL, d, len, rate, retries, bmc, QSLT_MGNT);
 }
 
 // Bulk OUT endpoint for the MGT queue: Linux (typical, non wifi_spec) uses RtOutPipe[3] with 4 OUT endpoints
@@ -99,7 +114,7 @@ static int tx_common(rtl_t *r, const uint8_t *frame, int len, int rate, int retr
     if (ep < 0) return -3;
     int bmc = frame[4] & 1;                           // addr1 group bit
     int pad = ((TXDESC_SIZE + len) % 512 == 0);       // avoid a bulk size that needs a zero-length packet (Linux pads 8 bytes)
-    if (build_desc(buf, len, rate, retries, bmc, data ? QSLT_BE : QSLT_MGNT) < 0) return -4;
+    if (build_desc(r, buf, len, rate, retries, bmc, data ? QSLT_BE : QSLT_MGNT) < 0) return -4;
     if (pad) {
         // PKT_OFFSET = 1 (8-byte units of padding) at dword1 bits 24..28, then recompute checksum
         set_bits(buf, 4, 24, 5, 1);

@@ -426,6 +426,17 @@ static int find_channel(link_t *l)
     return -1;
 }
 
+// After the handshake: switch the radio to the AP's operating width and move data to HT / VHT rates.
+static void apply_plan(link_t *l)
+{
+    tx_plan_t *p = &l->plan;
+    if (p->mode == MODE_LEGACY) return;
+    if (p->bw && rtl_set_channel_bw(l->r, l->s.channel, p->bw, p->sc)) { LOG("width switch failed, staying at 20 MHz legacy"); l->plan = (tx_plan_t){0}; return; }
+    l->r->tx_sgi = p->sgi;
+    if (!l->cfg.data_rate) l->data_rate = p->mode == MODE_VHT ? RATE_VHT(p->max_mcs) : RATE_HT(p->max_mcs);
+    LOG("plan: %s bw=%d sc=%d centre=%d top mcs=%d sgi=%d", p->mode == MODE_VHT ? "VHT" : "HT", 20 << p->bw, p->sc, p->center, p->max_mcs, p->sgi);
+}
+
 static int join_once(link_t *l)
 {
     char b[200];
@@ -435,6 +446,8 @@ static int join_once(link_t *l)
     memset(l->gk, 0, sizeof l->gk);
     memset(l->rx_pn, 0, sizeof l->rx_pn); l->tx_pn = 1; l->hs_rate = l->cfg.hs_rate ? l->cfg.hs_rate : 60;
     s->deauth_seen = s->disassoc_seen = 0; s->associated = 0; s->ap_seen = 0;
+    l->plan = (tx_plan_t){0}; s->want_ht = s->want_bw40 = s->want_vht = 0; l->data_rate = l->cfg.data_rate ? l->cfg.data_rate : 60; l->r->tx_sgi = 0;
+    if (l->r->bw && rtl_set_channel_bw(l->r, l->r->channel, 0, 0)) return jfail(l, "channel", "set_channel_failed");
     if (!l->cfg.channel && find_channel(l)) return jfail(l, "scan", "no_probe_response");
     if (s->ap_seen == 0 && sta_scan(s, 4000)) return jfail(l, "scan", "no_probe_response");
     LOG("ap bssid=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d", s->bssid[0], s->bssid[1], s->bssid[2], s->bssid[3], s->bssid[4], s->bssid[5], s->rssi);
@@ -446,6 +459,9 @@ static int join_once(link_t *l)
                     l->pw_cipher == LINK_CIPHER_TKIP, l->sec == LINK_SEC_WPA);
     }
     net_init(&l->n, s->mac);
+    caps_parse(s->ies, s->ies_len, &l->ap_caps);
+    caps_plan(&l->ap_caps, s->channel, l->cfg.max_bw >= 80 ? 2 : l->cfg.max_bw >= 40 ? 1 : l->cfg.max_bw == 20 ? 0 : 2, l->cfg.legacy, l->cfg.vht, &l->plan);
+    s->want_ht = l->plan.mode != MODE_LEGACY; s->want_bw40 = l->plan.bw >= 1; s->want_vht = l->plan.mode == MODE_VHT;
     int arc = sta_auth(s);
     if (arc && l->sec == LINK_SEC_WEP && s->auth_algo == 0 && s->last_status == 13) {     // AP wants shared-key auth
         LOG("open-system auth refused with status 13: trying shared-key");
@@ -478,6 +494,7 @@ static int join_once(link_t *l)
     } else {
         l->handshake_done = 1; l->t_hs = now_ms();         // no key handshake: the link is usable as soon as we are associated
     }
+    apply_plan(l);
     l->t_next_null = now_ms() + 15000;
 
     net_dhcp_start(&l->n, now_ms(), &l->ops);
@@ -499,8 +516,7 @@ int link_join(rtl_t *r, const link_cfg_t *cfg, link_t *l)
 {
     l->r = r;
     l->cfg = *cfg;
-    if (!l->cfg.data_rate) l->cfg.data_rate = 60;
-    l->data_rate = l->cfg.data_rate;
+    l->data_rate = l->cfg.data_rate ? l->cfg.data_rate : 60;
     sta_init(&l->s, r, cfg->ssid, cfg->bssid, cfg->channel);
     l->s.hidden = cfg->hidden;
     if (cfg->channel && r->channel != cfg->channel && sta_set_channel(&l->s, cfg->channel)) { jfail(l, "channel", "set_channel_failed"); return -1; }

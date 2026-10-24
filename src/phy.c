@@ -324,10 +324,42 @@ static int channel_valid(int ch)
     return (ch >= 1 && ch <= 14) || (ch >= 36 && ch <= 165);
 }
 
-// phy_SwChnl8812 (+ phy_SwBand8812) for 8821A path A, then phy_PostSetBwMode8812 for 20 MHz
-int rtl_set_channel(rtl_t *r, int channel, int bw20_only)
+// Centre channel for an operating channel + width. bw 0 = 20, 1 = 40, 2 = 80; sc = HT secondary channel offset
+// (0 none, 1 secondary above = primary is the lower half, 3 or 2 below). Returns the centre channel number, 0 if the
+// combination does not exist (e.g. 80 MHz on 2.4 GHz or on a channel outside the 80 MHz blocks).
+int rtl_center_channel(int ch, int bw, int sc, int *idx80)
 {
-    if (!channel_valid(channel) || !bw20_only) return -1;
+    if (bw == 0) return ch;
+    if (bw == 1) return sc == 1 ? ch + 2 : sc == 2 || sc == 3 ? ch - 2 : 0;
+    static const struct { int lo, c; } blk[] = {{36, 42}, {52, 58}, {100, 106}, {116, 122}, {132, 138}, {149, 155}, {165, 171}};
+    for (unsigned i = 0; i < sizeof blk / sizeof blk[0]; i++)
+        if (ch >= blk[i].lo && ch <= blk[i].lo + 12 && (ch - blk[i].lo) % 4 == 0) {
+            if (idx80) *idx80 = (ch - blk[i].lo) / 4;
+            return blk[i].c;
+        }
+    return 0;
+}
+
+// Sub-channel value (REG 0x483 / BB 0x8AC[5:2] / 0x838[31:28]) as phy_GetSecondaryChnl_8812: (40-of-80 << 4) | 20-sub-channel.
+// bw 1: 1 = primary is the upper 20, 2 = primary is the lower 20. bw 2: idx80 = 0..3 position of the primary in the 80 block.
+uint8_t rtl_sub_chnl(int bw, int sc, int idx80)
+{
+    if (bw == 1) return sc == 1 ? 2 : 1;
+    if (bw == 2) {
+        static const uint8_t v[4] = {4 | (10 << 4), 2 | (10 << 4), 1 | (9 << 4), 3 | (9 << 4)};
+        return v[idx80 & 3];
+    }
+    return 0;
+}
+
+// phy_SwChnl8812 (+ phy_SwBand8812) for 8821A path A, then phy_PostSetBwMode8812 (20/40/80 MHz).
+// `channel` is the primary 20 MHz channel; the radio is tuned to the centre channel of the 40/80 MHz block.
+int rtl_set_channel_bw(rtl_t *r, int channel, int bw, int sc)
+{
+    if (!channel_valid(channel) || bw < 0 || bw > 2) return -1;
+    int idx80 = 0, cch = rtl_center_channel(channel, bw, sc, &idx80);
+    if (!cch) return -1;
+    if (bw == 2 && channel <= 14) return -1;
     int e = 0;
 
     // phy_SwBand8812: switch band only if it differs from what 0x454[7] says
@@ -335,41 +367,59 @@ int rtl_set_channel(rtl_t *r, int channel, int bw20_only)
     int want_5g = channel > 14;
     if (cur_5g != want_5g && switch_band(r, want_5g) < 0) return -1;
 
-    // fc_area
+    // fc_area (by centre channel)
     uint32_t fc;
-    if (channel >= 36 && channel <= 48) fc = 0x494;
-    else if (channel >= 15 && channel <= 35) fc = 0x494;
-    else if (channel >= 50 && channel <= 80) fc = 0x453;
-    else if (channel >= 82 && channel <= 116) fc = 0x452;
-    else if (channel >= 118) fc = 0x412;
+    if (cch >= 36 && cch <= 48) fc = 0x494;
+    else if (cch >= 15 && cch <= 35) fc = 0x494;
+    else if (cch >= 50 && cch <= 80) fc = 0x453;
+    else if (cch >= 82 && cch <= 116) fc = 0x452;
+    else if (cch >= 118) fc = 0x412;
     else fc = 0x96A;
     e |= rtl_bb_w32(r, 0x860, 0x1FFE0000, fc);
 
     // RF_MOD_AG: RF 0x18 bits 18:16 and 9:8
     uint32_t ag;
-    if (channel >= 36 && channel <= 80) ag = 0x101;
-    else if (channel >= 15 && channel <= 35) ag = 0x101;
-    else if (channel >= 82 && channel <= 140) ag = 0x301;
-    else if (channel > 140) ag = 0x501;
+    if (cch >= 36 && cch <= 80) ag = 0x101;
+    else if (cch >= 15 && cch <= 35) ag = 0x101;
+    else if (cch >= 82 && cch <= 140) ag = 0x301;
+    else if (cch > 140) ag = 0x501;
     else ag = 0x000;
     e |= rtl_rf_w(r, 0, RR_RF_CHNLBW, BIT(18) | BIT(17) | BIT(16) | BIT(9) | BIT(8), ag);
-    e |= rtl_rf_w(r, 0, RR_RF_CHNLBW, 0xFF, (uint32_t)channel);
+    e |= rtl_rf_w(r, 0, RR_RF_CHNLBW, 0xFF, (uint32_t)cch);
     // (phy_FixSpur_8812A and the APK writes are 8812A / 8821 test-chip only: not applied)
 
-    // phy_PostSetBwMode8812, CHANNEL_WIDTH_20
-    uint16_t trx = rtl_r16(r, REG_WMAC_TRXPTCL);
-    e |= rtl_w16(r, REG_WMAC_TRXPTCL, trx & 0xFE7F);            // BW bits 8:7 = 0 -> 20 MHz
-    e |= rtl_w8(r, REG_DATA_SC, 0);                             // no secondary channel
-    e |= rtl_bb_w32(r, 0x8AC, 0x003003C3, 0x00300200);          // RFMOD: 20 MHz
-    e |= rtl_bb_w32(r, 0x8C4, BIT(30), 0);
-    e |= rtl_bb_w32(r, 0x848, 0x03C00000, 8);                   // L1 peak threshold, 1R
-    e |= rtl_rf_w(r, 0, RR_RF_CHNLBW, BIT(11) | BIT(10), 3);    // RF bandwidth = 20 MHz
+    // phy_PostSetBwMode8812
+    uint16_t trx = rtl_r16(r, REG_WMAC_TRXPTCL) & 0xFE7F;       // BW bits 8:7: 00 = 20, 01 = 40, 10 = 80
+    if (bw == 1) trx |= BIT(7); else if (bw == 2) trx |= BIT(8);
+    e |= rtl_w16(r, REG_WMAC_TRXPTCL, trx);
+    uint8_t scv = rtl_sub_chnl(bw, sc, idx80);
+    e |= rtl_w8(r, REG_DATA_SC, scv);
+    uint8_t r837 = rtl_r8(r, 0x837);
+    if (bw == 0) {
+        e |= rtl_bb_w32(r, 0x8AC, 0x003003C3, 0x00300200);
+        e |= rtl_bb_w32(r, 0x8C4, BIT(30), 0);
+        e |= rtl_bb_w32(r, 0x848, 0x03C00000, 8);               // L1 peak threshold, 1R
+    } else {
+        e |= rtl_bb_w32(r, 0x8AC, 0x003003C3, bw == 1 ? 0x00300201 : 0x00300202);
+        e |= rtl_bb_w32(r, 0x8C4, BIT(30), bw == 2);
+        e |= rtl_bb_w32(r, 0x8AC, 0x3C, scv & 0xF);
+        e |= rtl_bb_w32(r, 0x838, 0xF0000000, scv & 0xF);
+        e |= rtl_bb_w32(r, 0x848, 0x03C00000, bw == 1 ? ((r837 & 4) ? 6 : 8) : ((r837 & 4) ? 5 : 7));
+        if (bw == 1) e |= rtl_bb_w32(r, 0xA00, 0x10, (scv & 0xF) == 1);    // CCK sideband
+    }
+    e |= rtl_rf_w(r, 0, RR_RF_CHNLBW, BIT(11) | BIT(10), bw == 0 ? 3 : bw == 1 ? 1 : 0);   // RF bandwidth
 
     // PHY_SetTxPowerLevel8812 replaced by a fixed index for now
     { uint8_t keep = r->tx_power;                  // a pinned (user-set) index survives channel changes
       e |= rtl_set_tx_power(r, r->tx_power_pinned ? keep : RTL_TXPWR_DEFAULT); }
-    if (!e) r->channel = channel;
+    if (!e) { r->channel = channel; r->bw = bw; r->center = cch; r->sc = sc; r->idx80 = idx80; }
     return e ? -1 : 0;
+}
+
+int rtl_set_channel(rtl_t *r, int channel, int bw20_only)
+{
+    if (!bw20_only) return -1;
+    return rtl_set_channel_bw(r, channel, 0, 0);
 }
 
 // ---------------------------------------------------------------- entry point

@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "rtl.h"
 #include "rx.h"
+#include "caps.h"
 
 typedef struct {
     uint8_t mac[6], bssid[6];
@@ -26,6 +27,7 @@ typedef struct {
     uint8_t wep_key[13]; int wep_key_len, wep_keyid; uint32_t wep_iv;   // WEP key (shared-key auth encrypts the challenge with it)
     int hidden;                         // SSID may be hidden: match only Probe Responses to us (or Beacons of a known BSSID)
     uint8_t sec_ie[96]; int sec_ie_len; // security element (RSN or WPA1) copied into the association request
+    int want_ht, want_bw40, want_vht;           // add HT/VHT/WMM elements to the association request (HT 40 MHz capable if want_bw40)
     int rssi;
     // link health (frames from our AP only): last time any frame was heard, average RSSI (dBm, exponential), last RX rate
     long last_rx_ms; int rssi_avg; unsigned long rssi_n; int rx_rate; unsigned long rx_ap_frames;
@@ -35,6 +37,7 @@ typedef struct {
     // events
     int deauth_seen, deauth_reason, disassoc_seen, disassoc_reason;
     unsigned long data_rx, prot_rx, prot_extiv, eapol_rx, group_rx;
+    unsigned long rx_rate_hist[128];    // data frames received per hardware rate code
     int eapol_keyinfo;                  // last EAPOL-Key info (-1 none)
     // internal
     rtl_t *r;

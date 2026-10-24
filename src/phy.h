@@ -25,6 +25,13 @@ uint32_t rtl_rf_r(rtl_t *r, int path, uint8_t reg, uint32_t mask);
 // 0 = ok, <0 = error.
 int rtl_set_channel(rtl_t *r, int channel, int bw20_only);
 
+// Same, with channel width. channel = primary 20 MHz channel; bw 0/1/2 = 20/40/80 MHz; sc = HT secondary channel offset
+// (1 = secondary above the primary, 3 = below; ignored for 20 and 80). Tunes to the centre channel of the block.
+int rtl_set_channel_bw(rtl_t *r, int channel, int bw, int sc);
+// Centre channel of the block (0 = no such block); idx80 (optional) gets the position 0-3 of the primary in an 80 MHz block.
+uint8_t rtl_sub_chnl(int bw, int sc, int idx80);   // sub-channel register value (also the TX descriptor DATA_SC)
+int rtl_center_channel(int ch, int bw, int sc, int *idx80);
+
 // Crystal capacitor trim, 6 bits (Linux default 0x20 when efuse is empty). Writes 0x2C[23:12].
 int rtl_set_crystal_cap(rtl_t *r, uint8_t cap);
 

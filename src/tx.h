@@ -24,6 +24,9 @@ int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
 // does not encrypt: sectype none) on the BE queue / LOW bulk endpoint. Same units and return codes as rtl_tx_frame.
 int rtl_tx_data(rtl_t *r, const uint8_t *frame, int len, int rate, int retries);
 
+// Hardware rate code for a rate value (legacy Mbps*10, HT 1000+mcs, VHT 2000+mcs); -1 if unsupported.
+int rtl_tx_hw_rate(int rate);
+
 // Build the descriptor only (for debugging): desc must hold 40 bytes. Returns hardware rate code or -1.
 int rtl_tx_build_desc(uint8_t *desc, int len, int rate, int retries, int bmc);
 #endif

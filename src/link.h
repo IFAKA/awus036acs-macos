@@ -37,6 +37,9 @@ typedef struct {
     link_sec_t sec;
     const char *key;        // WPA passphrase, or WEP key: 5/13 ASCII characters or 10/26 hex digits
     int wep_keyid;          // WEP key index 0-3
+    int legacy;             // 1 = never use HT/VHT or a radio width above 20 MHz (the safe fallback, --legacy-rates)
+    int vht;                // 1 = also negotiate VHT (5 GHz); off by default, see PLAN.md (VHT downlink collapses)
+    int max_bw;             // width cap in MHz: 0 = as wide as the AP allows (up to 80), else 20 / 40 / 80
     int hs_rate, data_rate; // TX rates (Mbps*10) for EAPOL and data; 0 = 60 (6 Mbps OFDM)
 } link_cfg_t;
 
@@ -72,6 +75,8 @@ typedef struct link {
     uint8_t mic_rx[8], mic_tx[8];   // pairwise Michael keys (TKIP only)
     uint64_t rx_pn[16];
     struct { int have; uint8_t tk[16]; uint8_t mic_rx[8]; uint64_t pn; } gk[4];
+    tx_plan_t plan;                 // negotiated mode / width / top MCS (MODE_LEGACY until the handshake is done)
+    ap_caps_t ap_caps;
     uint32_t lease_ip;
     uint32_t ping_target;
     long ping_sent_at[LINK_PING_MAX]; int ping_got[LINK_PING_MAX]; long ping_rtt[LINK_PING_MAX];
