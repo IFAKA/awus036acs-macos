@@ -6,6 +6,7 @@
 #include "wpa.h"
 #include <CommonCrypto/CommonCrypto.h>
 #include <CommonCrypto/CommonKeyDerivation.h>
+#include "wep.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,8 +30,8 @@ void wpa_pmk(const char *pass, const uint8_t *ssid, size_t ssid_len, uint8_t pmk
 
 static int cmp_mem(const uint8_t *a, const uint8_t *b, size_t n) { return memcmp(a, b, n); }
 
-void wpa_ptk(const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
-             const uint8_t anonce[32], const uint8_t snonce[32], uint8_t ptk[48]) {
+void wpa_ptk_n(const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
+               const uint8_t anonce[32], const uint8_t snonce[32], uint8_t *ptk, size_t len) {
     static const char label[] = "Pairwise key expansion";   /* 22 bytes + 0x00 separator */
     uint8_t msg[sizeof(label) + 76 + 1];
     size_t n = sizeof(label);                                /* includes the NUL */
@@ -40,12 +41,17 @@ void wpa_ptk(const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
     const uint8_t *nl = cmp_mem(anonce, snonce, 32) < 0 ? anonce : snonce, *nh = nl == anonce ? snonce : anonce;
     memcpy(msg + n + 12, nl, 32); memcpy(msg + n + 44, nh, 32);
     n += 76;
-    uint8_t out[60];
-    for (int i = 0; i < 3; i++) {
+    uint8_t out[80];
+    for (int i = 0; i < 4; i++) {
         msg[n] = (uint8_t)i;
         CCHmac(kCCHmacAlgSHA1, pmk, 32, msg, n + 1, out + 20 * i);
     }
-    memcpy(ptk, out, 48);
+    memcpy(ptk, out, len);        /* PRF-512's first 48 bytes equal PRF-384 */
+}
+
+void wpa_ptk(const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
+             const uint8_t anonce[32], const uint8_t snonce[32], uint8_t ptk[48]) {
+    wpa_ptk_n(pmk, aa, spa, anonce, snonce, ptk, 48);
 }
 
 /* ------------------------------------------------------------ AES */
@@ -250,7 +256,8 @@ int eapol_key_parse(const uint8_t *e, size_t len, eapol_key_t *k) {
     size_t body = be16(e + 2);
     if (body < KF_FIXED || OFF_BODY + body > len) return -1;
     const uint8_t *b = e + OFF_BODY;
-    if (b[0] != 2) return -1;             /* descriptor type: IEEE 802.11 (RSN) */
+    if (b[0] != 2 && b[0] != 254) return -1;   /* descriptor type: IEEE 802.11 (RSN) or WPA1 */
+    k->desc = b[0];
     k->info = be16(b + 1);
     k->key_len = be16(b + 3);
     k->replay = be64(b + 5);
@@ -269,7 +276,8 @@ void eapol_key_mic(const uint8_t kck[16], const uint8_t *e, size_t frame_len, ui
     if (!buf) { memset(mic, 0, 16); return; }
     memcpy(buf, e, frame_len);
     memset(buf + OFF_BODY + 77, 0, 16);
-    CCHmac(kCCHmacAlgSHA1, kck, 16, buf, frame_len, h);
+    if ((be16(e + OFF_BODY + 1) & EAPOL_KEY_VER_MASK) == 1) CCHmac(kCCHmacAlgMD5, kck, 16, buf, frame_len, h);
+    else CCHmac(kCCHmacAlgSHA1, kck, 16, buf, frame_len, h);
     memcpy(mic, h, 16);
     if (buf != tmp) free(buf);
 }
@@ -281,19 +289,24 @@ int eapol_key_verify_mic(const uint8_t kck[16], const uint8_t *e, size_t frame_l
     return ct_eq(m, e + OFF_BODY + 77, 16) ? 0 : -1;
 }
 
-int eapol_key_build(uint8_t *out, size_t cap, uint16_t info, uint16_t key_len, uint64_t replay,
-                    const uint8_t nonce[32], const uint8_t *kd, size_t kd_len, const uint8_t kck[16]) {
+static int key_build(int desc, uint8_t *out, size_t cap, uint16_t info, uint16_t key_len, uint64_t replay,
+                     const uint8_t nonce[32], const uint8_t *kd, size_t kd_len, const uint8_t kck[16]) {
     size_t total = OFF_BODY + KF_FIXED + kd_len;
     if (total > cap || kd_len > 0xFFFF) return -1;
     memset(out, 0, OFF_BODY + KF_FIXED);
     out[0] = 2; out[1] = 3; put16(out + 2, (uint16_t)(KF_FIXED + kd_len));
     uint8_t *b = out + OFF_BODY;
-    b[0] = 2; put16(b + 1, info); put16(b + 3, key_len); put64(b + 5, replay);
+    b[0] = (uint8_t)desc; put16(b + 1, info); put16(b + 3, key_len); put64(b + 5, replay);
     if (nonce) memcpy(b + 13, nonce, 32);
     put16(b + 93, (uint16_t)kd_len);
     if (kd_len) memcpy(b + KF_FIXED, kd, kd_len);
     if (kck && (info & EAPOL_KEY_MIC)) eapol_key_mic(kck, out, total, b + 77);
     return (int)total;
+}
+
+int eapol_key_build(uint8_t *out, size_t cap, uint16_t info, uint16_t key_len, uint64_t replay,
+                    const uint8_t nonce[32], const uint8_t *kd, size_t kd_len, const uint8_t kck[16]) {
+    return key_build(2, out, cap, info, key_len, replay, nonce, kd, kd_len, kck);
 }
 
 int wpa_parse_key_data(const uint8_t *kd, size_t len, uint8_t *gtk, size_t *gtk_len, int *gtk_id,
@@ -314,7 +327,8 @@ int wpa_parse_key_data(const uint8_t *kd, size_t len, uint8_t *gtk, size_t *gtk_
                 if (gtk_tx) *gtk_tx = (d[4] >> 2) & 1;
                 found |= 1;
             }
-        } else if (id == 0x30 && !(found & 2)) {
+        } else if ((id == 0x30 || (id == 0xDD && l >= 4 && d[0] == 0x00 && d[1] == 0x50 && d[2] == 0xF2 && d[3] == 1)) &&
+                   !(found & 2)) {
             if (rsn && rsn_len && (size_t)l + 2 <= 128) { memcpy(rsn, kd + off, (size_t)l + 2); *rsn_len = (size_t)l + 2; }
             found |= 2;
         }
@@ -325,17 +339,26 @@ int wpa_parse_key_data(const uint8_t *kd, size_t len, uint8_t *gtk, size_t *gtk_
 
 /* ------------------------------------------------------------ state machine */
 
-int wpa_init(wpa_t *w, const char *pass, const uint8_t *ssid, size_t ssid_len,
-             const uint8_t aa[6], const uint8_t spa[6], const uint8_t *rsn_ie, size_t rsn_len) {
-    if (rsn_len > sizeof(w->rsn_ie)) return -1;
+int wpa_init_ex(wpa_t *w, const char *pass, const uint8_t *ssid, size_t ssid_len,
+                const uint8_t aa[6], const uint8_t spa[6], const uint8_t *ie, size_t ie_len,
+                int pairwise_tkip, int wpa1) {
+    if (ie_len > sizeof(w->rsn_ie)) return -1;
     memset(w, 0, sizeof(*w));
     wpa_pmk(pass, ssid, ssid_len, w->pmk);
     memcpy(w->aa, aa, 6); memcpy(w->spa, spa, 6);
-    memcpy(w->rsn_ie, rsn_ie, rsn_len); w->rsn_len = rsn_len;
+    memcpy(w->rsn_ie, ie, ie_len); w->rsn_len = ie_len;
+    w->ptk_len = pairwise_tkip ? 64 : 48;
+    w->wpa1 = wpa1;
     return 0;
 }
 
+int wpa_init(wpa_t *w, const char *pass, const uint8_t *ssid, size_t ssid_len,
+             const uint8_t aa[6], const uint8_t spa[6], const uint8_t *rsn_ie, size_t rsn_len) {
+    return wpa_init_ex(w, pass, ssid, ssid_len, aa, spa, rsn_ie, rsn_len, 0, 0);
+}
+
 const uint8_t *wpa_get_tk(const wpa_t *w) { return w->state == 2 ? w->ptk + 32 : NULL; }
+const uint8_t *wpa_get_ptk(const wpa_t *w) { return w->state == 2 ? w->ptk : NULL; }
 const uint8_t *wpa_get_gtk(const wpa_t *w, size_t *len, int *key_id) {
     if (!w->have_gtk) return NULL;
     if (len) *len = w->gtk_len;
@@ -345,10 +368,20 @@ const uint8_t *wpa_get_gtk(const wpa_t *w, size_t *len, int *key_id) {
 
 #define MAX_KD 512
 
-/* decrypt key data of a verified frame into plain (size MAX_KD); returns length or <0 */
+/* decrypt key data of a verified frame into plain (size MAX_KD); returns length or <0.
+ * Version 2: AES key wrap (RFC 3394), data is 8 bytes longer than the plaintext.
+ * Version 1: RC4 keyed with Key-IV || KEK, first 256 keystream bytes discarded, same length. */
 static int decrypt_kd(const wpa_t *w, const eapol_key_t *k, uint8_t *plain) {
-    if (!(k->info & EAPOL_KEY_ENCRYPTED)) return WPA_ERR_KEYDATA;
     size_t n = k->key_data_len;
+    if (w->ver == 1) {
+        uint8_t key[32];
+        if (n == 0 || n > MAX_KD) return WPA_ERR_KEYDATA;
+        memcpy(key, k->iv, 16); memcpy(key + 16, w->ptk + 16, 16);
+        memcpy(plain, k->key_data, n);
+        rc4_crypt(key, 32, 256, plain, n);
+        return (int)n;
+    }
+    if (!(k->info & EAPOL_KEY_ENCRYPTED)) return WPA_ERR_KEYDATA;
     if (n < 24 || n % 8 || n - 8 > MAX_KD) return WPA_ERR_KEYDATA;
     if (aes_unwrap(w->ptk + 16, k->key_data, n, plain)) return WPA_ERR_KEYDATA;
     return (int)(n - 8);
@@ -359,7 +392,10 @@ int wpa_rx_eapol(wpa_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t *o
     int r, n;
     *out_len = 0; *event = 0;
     if (eapol_key_parse(e, len, &k)) return WPA_ERR_MALFORMED;
-    if ((k.info & EAPOL_KEY_VER_MASK) != 2) return WPA_ERR_MALFORMED;
+    int ver = k.info & EAPOL_KEY_VER_MASK;
+    if (ver != 1 && ver != 2) return WPA_ERR_MALFORMED;
+    if (k.desc != (w->wpa1 ? 254 : 2)) return WPA_ERR_MALFORMED;
+    if (w->wpa1 && ver != 1) return WPA_ERR_MALFORMED;
     if ((k.info & (EAPOL_KEY_REQUEST | EAPOL_KEY_ERROR)) || !(k.info & EAPOL_KEY_ACK))
         return WPA_ERR_UNEXPECTED;                            /* only authenticator messages */
 
@@ -368,19 +404,24 @@ int wpa_rx_eapol(wpa_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t *o
     if (pairwise && !(k.info & EAPOL_KEY_MIC)) {              /* ---- message 1 */
         if (w->state == 2) return WPA_ERR_UNEXPECTED;         /* no PTK rekey: re-associate instead */
         if (k.info & (EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE)) return WPA_ERR_MALFORMED;
+        w->ver = ver;
         memcpy(w->anonce, k.nonce, 32);
         arc4random_buf(w->snonce, 32);
-        wpa_ptk(w->pmk, w->aa, w->spa, w->anonce, w->snonce, w->ptk);
+        wpa_ptk_n(w->pmk, w->aa, w->spa, w->anonce, w->snonce, w->ptk, (size_t)w->ptk_len);
         w->replay = k.replay; w->have_replay = 1;
-        n = eapol_key_build(out, 256 + w->rsn_len, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC | 2, 0,
-                            k.replay, w->snonce, w->rsn_ie, w->rsn_len, w->ptk);
+        /* WPA1 supplicants echo the AP's key_length (32 for TKIP); RSN supplicants send 0. */
+        n = key_build(w->wpa1 ? 254 : 2, out, 256 + w->rsn_len, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC | (uint16_t)ver,
+                      w->wpa1 ? k.key_len : 0, k.replay, w->snonce, w->rsn_ie, w->rsn_len, w->ptk);
         if (n < 0) return WPA_ERR_MALFORMED;
         *out_len = (size_t)n; w->state = 1;
         return 0;
     }
 
-    if (!(k.info & EAPOL_KEY_MIC) || !(k.info & EAPOL_KEY_SECURE)) return WPA_ERR_MALFORMED;
+    if (!(k.info & EAPOL_KEY_MIC)) return WPA_ERR_MALFORMED;
+    /* SECURE is set on RSN message 3 and on every group message; WPA1 message 3 does not carry it. */
+    if (!(k.info & EAPOL_KEY_SECURE) && !(w->wpa1 && pairwise)) return WPA_ERR_MALFORMED;
     if (w->state == 0) return WPA_ERR_UNEXPECTED;
+    if (ver != w->ver) return WPA_ERR_MALFORMED;
     if (eapol_key_verify_mic(w->ptk, e, k.frame_len)) return WPA_ERR_MIC;
     if (w->have_replay && k.replay <= w->replay) return WPA_ERR_REPLAY;
 
@@ -388,10 +429,13 @@ int wpa_rx_eapol(wpa_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t *o
     if (pairwise) {                                           /* ---- message 3 */
         if (!(k.info & EAPOL_KEY_INSTALL)) return WPA_ERR_MALFORMED;
         if (!ct_eq(k.nonce, w->anonce, 32)) return WPA_ERR_UNEXPECTED;
-        if ((n = decrypt_kd(w, &k, kd)) < 0) return n;
+        if (w->wpa1 && !(k.info & EAPOL_KEY_ENCRYPTED)) {     /* WPA1 sends the IE in clear */
+            if (k.key_data_len > MAX_KD) return WPA_ERR_KEYDATA;
+            memcpy(kd, k.key_data, k.key_data_len); n = (int)k.key_data_len;
+        } else if ((n = decrypt_kd(w, &k, kd)) < 0) return n;
         uint8_t gtk[32], rsn[128]; size_t gl = 0, rl = 0; int gid = 0, gtx = 0;
         r = wpa_parse_key_data(kd, (size_t)n, gtk, &gl, &gid, &gtx, rsn, &rl);
-        if (r < 0 || !(r & 2)) return WPA_ERR_KEYDATA;        /* AP RSN IE is mandatory in M3 */
+        if (r < 0 || !(r & 2)) return WPA_ERR_KEYDATA;        /* AP RSN / WPA IE is mandatory in M3 */
         int first = w->state == 1;
         w->replay = k.replay; w->have_replay = 1;
         memcpy(w->ap_rsn, rsn, rl); w->ap_rsn_len = rl;
@@ -400,8 +444,8 @@ int wpa_rx_eapol(wpa_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t *o
             if (first || !w->have_gtk) *event |= WPA_EV_GTK;
             w->have_gtk = 1;
         }
-        n = eapol_key_build(out, 256, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC | EAPOL_KEY_SECURE | 2, 0,
-                            k.replay, NULL, NULL, 0, w->ptk);
+        n = key_build(w->wpa1 ? 254 : 2, out, 256, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC | (w->wpa1 ? 0 : EAPOL_KEY_SECURE) | (uint16_t)ver,
+                      w->wpa1 ? k.key_len : 0, k.replay, NULL, NULL, 0, w->ptk);
         if (n < 0) return WPA_ERR_MALFORMED;
         *out_len = (size_t)n;
         w->state = 2;
@@ -412,14 +456,20 @@ int wpa_rx_eapol(wpa_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t *o
 
     /* ---- group message 1 */
     if (w->state != 2) return WPA_ERR_UNEXPECTED;
-    if ((n = decrypt_kd(w, &k, kd)) < 0) return n;
     uint8_t gtk[32]; size_t gl = 0; int gid = 0, gtx = 0;
-    r = wpa_parse_key_data(kd, (size_t)n, gtk, &gl, &gid, &gtx, NULL, NULL);
-    if (r < 0 || !(r & 1)) return WPA_ERR_KEYDATA;
+    if ((n = decrypt_kd(w, &k, kd)) < 0) return n;
+    if (w->wpa1) {                                            /* key data IS the GTK; index and Tx are in the key info */
+        if (n < 16 || n > 32) return WPA_ERR_KEYDATA;
+        memcpy(gtk, kd, (size_t)n); gl = (size_t)n;
+        gid = (k.info >> 4) & 3; gtx = !!(k.info & EAPOL_KEY_INSTALL);
+    } else {
+        r = wpa_parse_key_data(kd, (size_t)n, gtk, &gl, &gid, &gtx, NULL, NULL);
+        if (r < 0 || !(r & 1)) return WPA_ERR_KEYDATA;
+    }
     w->replay = k.replay;
     memcpy(w->gtk, gtk, gl); w->gtk_len = gl; w->gtk_id = gid; w->gtk_tx = gtx; w->have_gtk = 1;
-    n = eapol_key_build(out, 256, EAPOL_KEY_MIC | EAPOL_KEY_SECURE | 2, 0, k.replay,
-                        NULL, NULL, 0, w->ptk);
+    n = key_build(w->wpa1 ? 254 : 2, out, 256, EAPOL_KEY_MIC | EAPOL_KEY_SECURE | (uint16_t)ver | (uint16_t)(k.info & 0x30),
+                  0, k.replay, NULL, NULL, 0, w->ptk);
     if (n < 0) return WPA_ERR_MALFORMED;
     *out_len = (size_t)n; *event |= WPA_EV_GTK;
     return 0;

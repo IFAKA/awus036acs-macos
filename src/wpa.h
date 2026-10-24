@@ -4,7 +4,8 @@
 // See LICENSE for the full license text.
 /* wpa.h - self-contained WPA2-Personal (RSN, CCMP, PSK) supplicant library.
  * Apple CommonCrypto only. No device or network needed.
- * Key descriptor version 2 only (HMAC-SHA1-128 MIC, AES key wrap). */
+ * Key descriptor versions: 2 (HMAC-SHA1-128 MIC, AES key wrap; WPA2-CCMP) and 1 (HMAC-MD5 MIC, RC4 key data; WPA1 and
+ * TKIP). Descriptor type 2 (RSN) and 254 (WPA1 vendor style). The version in use is taken from the AP's message 1. */
 #ifndef WPA_H
 #define WPA_H
 #include <stddef.h>
@@ -12,9 +13,12 @@
 
 /* ---- key derivation ---- */
 void wpa_pmk(const char *pass, const uint8_t *ssid, size_t ssid_len, uint8_t pmk[32]);
-/* PTK layout: KCK=ptk[0..16], KEK=ptk[16..32], TK=ptk[32..48] */
+/* PTK layout: KCK=ptk[0..16], KEK=ptk[16..32], TK=ptk[32..48]; TKIP (len 64) adds the Michael keys
+ * ptk[48..56] (Authenticator->Supplicant, i.e. our RX) and ptk[56..64] (Supplicant->Authenticator, our TX). */
 void wpa_ptk(const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
              const uint8_t anonce[32], const uint8_t snonce[32], uint8_t ptk[48]);
+void wpa_ptk_n(const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
+               const uint8_t anonce[32], const uint8_t snonce[32], uint8_t *ptk, size_t len); /* len 48 or 64 */
 
 /* ---- AES primitives (exposed for tests) ---- */
 int aes_wrap(const uint8_t kek[16], const uint8_t *plain, size_t len, uint8_t *out); /* len%8==0, len>=16; out len+8 */
@@ -37,6 +41,7 @@ int ccm_open(const uint8_t key[16], const uint8_t nonce[13], const uint8_t *aad,
 #define EAPOL_KEY_ENCRYPTED 0x1000
 
 typedef struct {
+    int desc;                      /* descriptor type: 2 (RSN) or 254 (WPA1) */
     uint16_t info;                 /* key information (host order) */
     uint16_t key_len;
     uint64_t replay;
@@ -49,10 +54,10 @@ typedef struct {
     size_t frame_len;              /* EAPOL header + body actually used */
 } eapol_key_t;
 
-/* parse an EAPOL frame (4-byte header + descriptor type 2 key frame). 0 ok, <0 malformed.
+/* parse an EAPOL frame (4-byte header + descriptor type 2 or 254 key frame; k->desc tells which). 0 ok, <0 malformed.
  * Pointers in *k reference `eapol`. */
 int eapol_key_parse(const uint8_t *eapol, size_t len, eapol_key_t *k);
-/* compute HMAC-SHA1-128 MIC over frame with the MIC field zeroed */
+/* compute the MIC (HMAC-SHA1-128, or HMAC-MD5 when the frame's key descriptor version is 1) with the MIC field zeroed */
 void eapol_key_mic(const uint8_t kck[16], const uint8_t *eapol, size_t frame_len, uint8_t mic[16]);
 /* 0 if MIC valid */
 int eapol_key_verify_mic(const uint8_t kck[16], const uint8_t *eapol, size_t frame_len);
@@ -60,7 +65,7 @@ int eapol_key_verify_mic(const uint8_t kck[16], const uint8_t *eapol, size_t fra
 int eapol_key_build(uint8_t *out, size_t cap, uint16_t info, uint16_t key_len, uint64_t replay,
                     const uint8_t nonce[32], const uint8_t *key_data, size_t kd_len,
                     const uint8_t kck[16]);
-/* walk key data (plain KDE/IE list); GTK KDE -> gtk/gtk_id/tx, RSN IE (0x30) -> rsn.
+/* walk key data (plain KDE/IE list); GTK KDE -> gtk/gtk_id/tx, RSN IE (0x30) or WPA vendor IE (dd 00:50:f2:01) -> rsn.
  * Any output pointer may be NULL. Returns bitmask: 1 = GTK found, 2 = RSN IE found, <0 malformed. */
 int wpa_parse_key_data(const uint8_t *kd, size_t len, uint8_t *gtk, size_t *gtk_len, int *gtk_id,
                        int *gtk_tx, uint8_t *rsn, size_t *rsn_len);
@@ -76,7 +81,10 @@ int wpa_parse_key_data(const uint8_t *kd, size_t len, uint8_t *gtk, size_t *gtk_
 #define WPA_ERR_KEYDATA    (-5)
 
 typedef struct {
-    uint8_t pmk[32], ptk[48];
+    uint8_t pmk[32], ptk[64];
+    int ptk_len;                             /* 48 (CCMP) or 64 (TKIP) */
+    int wpa1;                                /* WPA1: key descriptor 254, no RSN, GTK only in group message 1 */
+    int ver;                                 /* key descriptor version of this handshake (1 or 2), set by message 1 */
     uint8_t aa[6], spa[6];
     uint8_t anonce[32], snonce[32];
     uint8_t rsn_ie[64]; size_t rsn_len;      /* our RSN IE (sent in M2) */
@@ -89,6 +97,11 @@ typedef struct {
 /* rsn_ie: the full IE (0x30, len, ...) that goes in M2 key data. returns 0 or -1 */
 int wpa_init(wpa_t *w, const char *pass, const uint8_t *ssid, size_t ssid_len,
              const uint8_t aa[6], const uint8_t spa[6], const uint8_t *rsn_ie, size_t rsn_len);
+/* Same, choosing the PTK length (64 when the pairwise cipher is TKIP) and WPA1 (descriptor 254, ie = WPA vendor IE). */
+int wpa_init_ex(wpa_t *w, const char *pass, const uint8_t *ssid, size_t ssid_len,
+                const uint8_t aa[6], const uint8_t spa[6], const uint8_t *ie, size_t ie_len,
+                int pairwise_tkip, int wpa1);
+const uint8_t *wpa_get_ptk(const wpa_t *w);                 /* whole PTK (ptk_len bytes) once installed, else NULL */
 /* Process a received EAPOL frame. *out_len = bytes of reply written to out (0 if none; out >= 256+key data).
  * Returns 0 on success, WPA_ERR_* on rejection (frame must be dropped). *event is a WPA_EV_* mask. */
 int wpa_rx_eapol(wpa_t *w, const uint8_t *eapol, size_t len, uint8_t *out, size_t *out_len, int *event);
