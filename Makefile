@@ -32,3 +32,15 @@ clean:
 AUTH_SRC = $(subst src/inject.c,src/authtest.c,$(INJ_SRC))
 build/authtest: $(AUTH_SRC) src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(AUTH_SRC) $(LIBS)
+
+STA_SRC = $(subst src/inject.c,src/sta.c src/staconn.c,$(INJ_SRC))
+build/staconn: $(STA_SRC) src/sta.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+	$(CC) $(CFLAGS) -o $@ $(STA_SRC) $(LIBS)
+.PHONY: staconn
+staconn: build/staconn
+
+.PHONY: test-wpa
+test-wpa: build/test_wpa
+	./build/test_wpa
+build/test_wpa: src/wpa.c src/wpa.h src/test_wpa.c | build
+	$(CC) -O2 -Wall -o $@ src/wpa.c src/test_wpa.c
