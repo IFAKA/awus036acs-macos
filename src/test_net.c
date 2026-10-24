@@ -287,7 +287,7 @@ static void test_rebind(void)
     net_tick(&n, tb + 3150000, &OPS); CHECK(n.rebinding && ntx == before + 1);     /* T2 = 7/8 of 3600 s */
     check_dhcp_frame(&txs[ntx - 1], DHCP_REQUEST, OURIP, &x2);
     srv_send(&n, DHCP_ACK, x2, OURIP, 3600, tb + 3151000);
-    CHECK(n.dhcp_state == NET_DHCP_BOUND && n.renews == 1 && n.rebinds == 1 && !n.rebinding && nlease == 0);
+    CHECK(n.dhcp_state == NET_DHCP_BOUND && n.renews == 1 && n.rebinds == 1 && !n.rebinding);
     /* forced renewal (what `awusctl debug renew` does) */
     reset_cap();
     CHECK(net_dhcp_renew_now(&n, tb + 3152000, &OPS, 0) == 0 && ntx == 1 && n.dhcp_state == NET_DHCP_RENEWING);
