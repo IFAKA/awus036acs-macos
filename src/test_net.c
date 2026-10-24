@@ -272,6 +272,35 @@ static void test_dhcp(void)
     CHECK(ntx == 1 && n.dhcp_state == NET_DHCP_SELECTING);
 }
 
+static void test_rebind(void)
+{
+    net_t n; uint32_t x2; uint64_t t0 = 300000, tb = t0 + 20;
+    bring_up(&n, t0);                                        /* lease 3600 s bound at tb */
+    CHECK(n.renews == 0 && n.rebinds == 0 && !n.rebinding);
+    net_tick(&n, tb + 1799999, &OPS); CHECK(ntx == 0);
+    net_tick(&n, tb + 1800000, &OPS); CHECK(ntx == 1 && n.dhcp_state == NET_DHCP_RENEWING && !n.rebinding);
+    check_dhcp_frame(&txs[0], DHCP_REQUEST, OURIP, &x2);
+    net_tick(&n, tb + 1809000, &OPS); CHECK(ntx == 1);
+    net_tick(&n, tb + 1810000, &OPS); CHECK(ntx == 2);      /* retransmit every 10 s */
+    net_tick(&n, tb + 3149999, &OPS); CHECK(!n.rebinding);
+    int before = ntx;
+    net_tick(&n, tb + 3150000, &OPS); CHECK(n.rebinding && ntx == before + 1);     /* T2 = 7/8 of 3600 s */
+    check_dhcp_frame(&txs[ntx - 1], DHCP_REQUEST, OURIP, &x2);
+    srv_send(&n, DHCP_ACK, x2, OURIP, 3600, tb + 3151000);
+    CHECK(n.dhcp_state == NET_DHCP_BOUND && n.renews == 1 && n.rebinds == 1 && !n.rebinding && nlease == 0);
+    /* forced renewal (what `awusctl debug renew` does) */
+    reset_cap();
+    CHECK(net_dhcp_renew_now(&n, tb + 3152000, &OPS, 0) == 0 && ntx == 1 && n.dhcp_state == NET_DHCP_RENEWING);
+    CHECK(net_dhcp_renew_now(&n, tb + 3152001, &OPS, 0) == -1);          /* not BOUND any more */
+    check_dhcp_frame(&txs[0], DHCP_REQUEST, OURIP, &x2);
+    srv_send(&n, DHCP_ACK, x2, OURIP, 3600, tb + 3153000);
+    CHECK(n.dhcp_state == NET_DHCP_BOUND && n.renews == 2 && n.rebinds == 1 && n.configured);
+    reset_cap();
+    CHECK(net_dhcp_renew_now(&n, tb + 3154000, &OPS, 1) == 0 && n.rebinding);
+    srv_send(&n, DHCP_ACK, n.xid, OURIP, 3600, tb + 3155000);
+    CHECK(n.renews == 3 && n.rebinds == 2);
+}
+
 static void test_arp(void)
 {
     net_t n; uint8_t f[64], mac[6]; size_t l;
@@ -444,7 +473,7 @@ static void test_fuzz(void)
 
 int main(void)
 {
-    test_llc(); test_dhcp(); test_arp(); test_tx_rx_ip(); test_tun(); test_fuzz();
+    test_llc(); test_dhcp(); test_rebind(); test_arp(); test_tx_rx_ip(); test_tun(); test_fuzz();
     if (fails) { printf("NET TEST FAILED (%d)\n", fails); return 1; }
     printf("NET TEST OK\n");
     return 0;

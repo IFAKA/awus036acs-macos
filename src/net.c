@@ -245,6 +245,16 @@ void net_dhcp_start(net_t *n, uint64_t now, const net_ops_t *ops)
     dhcp_send(n, ops, DHCP_DISCOVER, 0, 0, 0, now);
 }
 
+int net_dhcp_renew_now(net_t *n, uint64_t now, const net_ops_t *ops, int rebind)
+{
+    if (!n->configured || n->dhcp_state != NET_DHCP_BOUND) return -1;
+    n->dhcp_state = NET_DHCP_RENEWING;
+    n->rebinding = rebind != 0;
+    n->xid_ctr = n->xid_ctr * 1664525u + 1013904223u; n->xid = n->xid_ctr;
+    dhcp_send(n, ops, DHCP_REQUEST, n->lease.ip, 0, 0, now);
+    return 0;
+}
+
 static void dhcp_rx(net_t *n, const uint8_t *ip, size_t len, uint64_t now,
                     const net_ops_t *ops)
 {
@@ -269,6 +279,8 @@ static void dhcp_rx(net_t *n, const uint8_t *ip, size_t len, uint64_t now,
         l.server_id = m.has_server_id ? m.server_id : n->offer_server;
         int changed = !n->configured || n->lease.ip != l.ip || n->lease.gw != l.gw ||
                       n->lease.mask != l.mask;
+        if (n->dhcp_state == NET_DHCP_RENEWING) { n->renews++; if (n->rebinding) n->rebinds++; }
+        n->rebinding = 0;
         n->lease = l; n->configured = 1;
         n->dhcp_state = NET_DHCP_BOUND; n->t_bound = now;
         if (changed) {
@@ -381,16 +393,16 @@ void net_tick(net_t *n, uint64_t now, const net_ops_t *ops)
         break;
     case NET_DHCP_BOUND:
         if (n->lease.lease_s != 0xffffffffu &&
-            now - n->t_bound >= (uint64_t)n->lease.lease_s * 500) {   /* T1 = lease/2 */
-            n->dhcp_state = NET_DHCP_RENEWING;
-            n->xid_ctr = n->xid_ctr * 1664525u + 1013904223u; n->xid = n->xid_ctr;
-            dhcp_send(n, ops, DHCP_REQUEST, n->lease.ip, 0, 0, now);
-        }
+            now - n->t_bound >= (uint64_t)n->lease.lease_s * 500)     /* T1 = lease/2 */
+            net_dhcp_renew_now(n, now, ops, 0);
         break;
     case NET_DHCP_RENEWING:
         if (now - n->t_bound >= (uint64_t)n->lease.lease_s * 1000) {  /* expired */
             lease_lost(n, ops);
             net_dhcp_start(n, now, ops);
+        } else if (!n->rebinding && now - n->t_bound >= (uint64_t)n->lease.lease_s * 875) {   /* T2 = 7/8 lease: rebind */
+            n->rebinding = 1;
+            dhcp_send(n, ops, DHCP_REQUEST, n->lease.ip, 0, 0, now);
         } else if (now - n->t_last_tx >= 10000) {
             dhcp_send(n, ops, DHCP_REQUEST, n->lease.ip, 0, 0, now);
         }

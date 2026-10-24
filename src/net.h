@@ -89,6 +89,8 @@ typedef struct {
     uint32_t offer_ip, offer_server;
     net_lease_t lease; int configured;
     uint64_t t_start, t_bound, t_last_tx, t_last_arp; int tries;
+    int rebinding;                      /* RENEWING and past T2 (87.5%): the request is repeated as a rebind */
+    unsigned renews, rebinds;           /* completed renewals / of those, completed after T2 */
     net_arp_entry_t arp[NET_ARP_SLOTS]; int arp_next;
     net_txq_t txq[NET_TXQ_SLOTS];
 } net_t;
@@ -96,8 +98,11 @@ typedef struct {
 void net_init(net_t *n, const uint8_t our_mac[6]);
 /* Begin DHCP (sends DISCOVER). Also used to restart. */
 void net_dhcp_start(net_t *n, uint64_t now_ms, const net_ops_t *ops);
-/* Periodic: DHCP retransmit, renew at T1 (lease/2), expiry, ARP retry, queue age. */
+/* Periodic: DHCP retransmit, renew at T1 (lease/2), rebind at T2 (7/8 lease), expiry, ARP retry, queue age.
+ * Renew and rebind requests are broadcast with ciaddr set (RFC 2131 4.3.2 allows a server to answer those). */
 void net_tick(net_t *n, uint64_t now_ms, const net_ops_t *ops);
+/* Start a renewal (rebind=0, as at T1) or a rebind (rebind=1, as at T2) right now. Only when BOUND. Returns 0 if sent. */
+int  net_dhcp_renew_now(net_t *n, uint64_t now_ms, const net_ops_t *ops, int rebind);
 /* Feed one decrypted data-frame payload (LLC/SNAP + ...). Garbage is ignored. */
 void net_rx(net_t *n, const uint8_t *payload, size_t len, uint64_t now_ms,
             const net_ops_t *ops);
