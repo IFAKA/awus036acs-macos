@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>AWUS WiFi Driver</title>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+    <domains enable_anywhere="false" enable_localSystem="true"/>
+    <choices-outline><line choice="default"><line choice="com.awus.driver"/></line></choices-outline>
+    <choice id="default"/>
+    <choice id="com.awus.driver" visible="false"><pkg-ref id="com.awus.driver"/></choice>
+    <pkg-ref id="com.awus.driver" version="0.1.0" onConclusion="none">awus-component.pkg</pkg-ref>
+</installer-gui-script>

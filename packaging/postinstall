@@ -1,0 +1,26 @@
+#!/bin/sh
+# Runs as root after the payload is in place. Loads the daemon and starts the menu-bar app for the logged-in user.
+# Never fails the install over launchctl trouble: the daemon also starts at next boot (RunAtLoad).
+PLIST=/Library/LaunchDaemons/com.awus.awusd.plist
+AGENT=/Library/LaunchAgents/com.awus.wifi.plist
+
+install -d -m 700 /var/db/awusd
+chown root:wheel "$PLIST" "$AGENT" 2>/dev/null
+chmod 644 "$PLIST" "$AGENT"
+
+# The daemon's socket is root-only; let the user who is logged in at the console talk to it.
+UID_CONSOLE=$(stat -f %u /dev/console 2>/dev/null)
+if [ -n "$UID_CONSOLE" ] && [ "$UID_CONSOLE" != 0 ]; then
+    /usr/libexec/PlistBuddy -c "Add :ProgramArguments: string --sock-uid" \
+        -c "Add :ProgramArguments: string $UID_CONSOLE" "$PLIST" 2>/dev/null
+fi
+
+# Upgrade: unload an older copy first.
+launchctl bootout system/com.awus.awusd 2>/dev/null
+launchctl bootstrap system "$PLIST" || echo "awusd: launchctl bootstrap failed; it will load at next boot"
+
+if [ -n "$UID_CONSOLE" ] && [ "$UID_CONSOLE" != 0 ]; then
+    launchctl bootout "gui/$UID_CONSOLE/com.awus.wifi" 2>/dev/null
+    launchctl bootstrap "gui/$UID_CONSOLE" "$AGENT" 2>/dev/null
+fi
+exit 0

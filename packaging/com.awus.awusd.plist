@@ -5,7 +5,7 @@
     <key>Label</key><string>com.awus.awusd</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/sbin/awusd</string>
+        <string>/usr/local/libexec/awus/awusd</string>
         <string>--profiles</string><string>/var/db/awusd/profiles.json</string>
         <string>--log</string><string>/var/log/awusd.log</string>
     </array>
