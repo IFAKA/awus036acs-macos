@@ -44,6 +44,7 @@ static void parse_ies(sta_t *s, const uint8_t *p, const uint8_t *end)
         if (p[0] == 1 && n <= 16) { memcpy(s->rates, p + 2, n); s->nrates = n; }
         else if (p[0] == 50 && n <= 16) { memcpy(s->xrates, p + 2, n); s->nxrates = n; }
         else if (p[0] == 48 && n + 2 <= (int)sizeof s->rsn) { memcpy(s->rsn, p, n + 2); s->rsn_len = n + 2; }
+        else if (p[0] == 221 && n >= 4 && !memcmp(p + 2, "\x00\x50\xf2\x01", 4) && n + 2 <= (int)sizeof s->wpa_ie) { memcpy(s->wpa_ie, p, n + 2); s->wpa_ie_len = n + 2; }
         p += 2 + n;
     }
 }
@@ -62,18 +63,30 @@ static void on_frame(void *ud, const rtl_frame_t *f)
         int frombss = s->have_bssid && !memcmp(a2, s->bssid, 6);
         if ((sub == 5 || sub == 8) && len >= 36) {          // probe resp / beacon
             const uint8_t *ie = d + 36, *end = d + len;
-            char ss[33] = ""; const uint8_t *p = ie; int have_ssid = 0;
+            char ss[33] = ""; const uint8_t *p = ie; int have_ssid = 0, ssid_len = 0;
             while (p + 2 <= end && p + 2 + p[1] <= end) {
-                if (p[0] == 0 && p[1] <= 32) { memcpy(ss, p + 2, p[1]); ss[p[1]] = 0; have_ssid = 1; break; }
+                if (p[0] == 0 && p[1] <= 32) { memcpy(ss, p + 2, p[1]); ss[p[1]] = 0; ssid_len = p[1]; have_ssid = 1; break; }
                 p += 2 + p[1];
             }
-            if (!have_ssid || strcmp(ss, s->ssid)) return;
+            if (!have_ssid) return;
             if (s->have_bssid && !frombss) return;
+            int match = !strcmp(ss, s->ssid);
+            if (s->hidden) {
+                // a hidden network's Beacons carry an empty or zeroed SSID: believe them only from a BSSID we were told;
+                // otherwise only a Probe Response addressed to us (it carries the real SSID) counts.
+                int blank = ssid_len == 0 || ss[0] == 0;
+                if (blank) match = s->have_bssid && frombss;
+                else if (sub == 8 && !s->have_bssid) match = 0;
+                else if (sub == 5 && !tome && !s->have_bssid) match = 0;
+            }
+            if (!match) return;
             if (!s->have_bssid) { memcpy(s->bssid, a2, 6); s->have_bssid = 1; rtl_set_sta_addr(s->r, s->mac, s->bssid); }
             s->ap_cap = d[34] | d[35] << 8;
             s->rssi = f->rssi_dbm;
-            s->nrates = s->nxrates = 0; s->rsn_len = 0;
+            s->nrates = s->nxrates = 0; s->rsn_len = s->wpa_ie_len = 0;
             parse_ies(s, ie, end);
+            s->ies_len = (int)(end - ie) < (int)sizeof s->ies ? (int)(end - ie) : (int)sizeof s->ies;
+            memcpy(s->ies, ie, s->ies_len);
             s->ap_seen = 1;
         } else if (sub == 11 && tome && frombss && len >= 30) {   // auth
             if ((d[24] | d[25] << 8) == 0 && (d[26] | d[27] << 8) == 2) { s->auth_status = d[28] | d[29] << 8; s->auth_got = 1; }
@@ -168,8 +181,7 @@ int sta_assoc(sta_t *s)
     fr[n++] = 0; fr[n++] = sl; memcpy(fr + n, s->ssid, sl); n += sl;
     if (s->nrates) { fr[n++] = 1; fr[n++] = s->nrates; memcpy(fr + n, s->rates, s->nrates); n += s->nrates; }
     if (s->nxrates) { fr[n++] = 50; fr[n++] = s->nxrates; memcpy(fr + n, s->xrates, s->nxrates); n += s->nxrates; }
-    static const uint8_t rsn[] = {48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0};
-    memcpy(fr + n, rsn, sizeof rsn); n += sizeof rsn;
+    if (s->sec_ie_len) { memcpy(fr + n, s->sec_ie, s->sec_ie_len); n += s->sec_ie_len; }
     s->assoc_got = 0;
     for (int a = 0; a < 5 && !s->assoc_got; a++) {
         if (rtl_tx_frame(s->r, fr, n, s->rate, 7)) return 2;
@@ -197,4 +209,13 @@ int sta_send_null(sta_t *s)
     put_hdr(fr, 0x48, s->bssid, s->mac, s->bssid);      // null function (subtype 4)
     fr[1] = 0x01;                                       // to-DS, PM=0
     return rtl_tx_data(s->r, fr, 24, 60, 7);
+}
+
+int sta_deauth(sta_t *s, int reason)
+{
+    uint8_t fr[26];
+    put_hdr(fr, 0xC0, s->bssid, s->mac, s->bssid);
+    fr[24] = reason; fr[25] = reason >> 8;
+    s->associated = 0;
+    return rtl_tx_frame(s->r, fr, sizeof fr, s->rate, 3);
 }

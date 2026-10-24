@@ -27,6 +27,7 @@ typedef struct {
     int privacy;           // capability Privacy bit; scan_parse_beacon() sets it, scan_parse_ie() leaves it 0
     int rsn, wpa1;         // RSN element (id 48) / vendor WPA element (00:50:f2:01) seen
     unsigned rsn_akm, rsn_cipher, wpa_akm, wpa_cipher;
+    int rsn_group, wpa_group;   // group cipher suite type byte of the RSN / WPA element (1 WEP40, 2 TKIP, 4 CCMP, 5 WEP104), 0 = none
     int wps;               // vendor WPS element (00:50:f2:04) seen
     int max_rate;          // best legacy rate in 500 kb/s units (0 = none listed)
     int ht, vht, he;       // HT / VHT / HE capabilities present

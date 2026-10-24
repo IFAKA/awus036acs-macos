@@ -31,11 +31,12 @@ static unsigned cipher_bit(uint8_t t)
 
 // RSN and WPA1 share one layout: version(2) group(4) pairwise_count(2) pairwise(4 each) akm_count(2) akm(4 each).
 // Suites with OUI 00:0f:ac (RSN) or 00:50:f2 (WPA1) are decoded by their type byte.
-static void parse_suites(const uint8_t *p, int len, unsigned *cipher, unsigned *akm)
+static void parse_suites(const uint8_t *p, int len, unsigned *cipher, unsigned *akm, int *group)
 {
-    *cipher = *akm = 0;
+    *cipher = *akm = 0; *group = 0;
     if (len < 8) return;
-    int off = 2 + 4;                        // skip version + group cipher (the group cipher is not the interesting one)
+    *group = p[5];                          // group cipher suite type byte (2 TKIP, 4 CCMP, ...)
+    int off = 2 + 4;
     int pc = p[off] | p[off + 1] << 8; off += 2;
     if (off + 4 * pc > len) return;
     for (int i = 0; i < pc; i++) *cipher |= cipher_bit(p[off + 4 * i + 3]);
@@ -76,11 +77,11 @@ void scan_parse_ie(const uint8_t *ies, int len, scan_ap_t *out)
         case 255: if (l >= 1 && d[0] == 35) out->he = 1; break;   // extension element: HE capabilities
         case 48:
             out->rsn = 1;
-            if (l >= 2) parse_suites(d, l, &out->rsn_cipher, &out->rsn_akm);
+            if (l >= 2) parse_suites(d, l, &out->rsn_cipher, &out->rsn_akm, &out->rsn_group);
             break;
         case 221:
             if (l >= 4 && d[0] == 0x00 && d[1] == 0x50 && d[2] == 0xF2) {
-                if (d[3] == 1) { out->wpa1 = 1; parse_suites(d + 4, l - 4, &out->wpa_cipher, &out->wpa_akm); }
+                if (d[3] == 1) { out->wpa1 = 1; parse_suites(d + 4, l - 4, &out->wpa_cipher, &out->wpa_akm, &out->wpa_group); }
                 else if (d[3] == 4) out->wps = 1;
             }
             break;

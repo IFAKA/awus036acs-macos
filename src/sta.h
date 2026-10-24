@@ -20,6 +20,10 @@ typedef struct {
     uint8_t rates[16]; int nrates;      // supported rates IE body (raw, with basic bit)
     uint8_t xrates[16]; int nxrates;    // extended supported rates IE body
     uint8_t rsn[64]; int rsn_len;       // full RSN IE incl. id+len (0 if none)
+    uint8_t wpa_ie[96]; int wpa_ie_len; // full WPA1 vendor IE (dd len 00:50:f2:01 ...) incl. id+len (0 if none)
+    uint8_t ies[512]; int ies_len;      // raw IE chain of the matched Beacon / Probe Response (for scan_parse_ie)
+    int hidden;                         // SSID may be hidden: match only Probe Responses to us (or Beacons of a known BSSID)
+    uint8_t sec_ie[96]; int sec_ie_len; // security element (RSN or WPA1) copied into the association request
     int rssi;
     // join result
     int aid, last_status;
@@ -48,6 +52,8 @@ int  sta_assoc(sta_t *s);
 // Process RX for up to ms; delivers matching data frames to cb (may be NULL). Updates counters/deauth state.
 void sta_poll(sta_t *s, int ms, sta_data_cb cb, void *ud);
 int  sta_send_null(sta_t *s);
+// Send a Deauthentication frame to our AP (reason 3 = station is leaving). Best effort; only call for an AP we joined.
+int  sta_deauth(sta_t *s, int reason);
 // Send a to-DS data frame: dst=DA, payload = LLC/SNAP + packet (or pre-encrypted body incl. CCMP header when prot=1).
 int  sta_send_data(sta_t *s, const uint8_t dst[6], const uint8_t *body, int blen, int prot, int rate);
 #endif

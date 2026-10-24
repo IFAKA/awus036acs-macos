@@ -46,7 +46,7 @@ int main(void)
         0x01,0x00, 0x00,0x50,0xF2,0x02 };                  // WPA1: TKIP/TKIP, AKM type 2 = PSK
     scan_parse_ie(wpa1, sizeof wpa1, &a);
     a.privacy = 1;
-    CHECK(a.wpa1 && !a.rsn);
+    CHECK(a.wpa1 && !a.rsn && a.wpa_group == 2 && a.rsn_group == 0);   // WPA1 group cipher = TKIP (suite type 2)
     expect("wpa1-tkip", &a, "WPA-PSK", "TKIP");
 
     static const uint8_t wpa2[] = { HEAD, RSN(4,4,2),
