@@ -78,7 +78,29 @@ directly when no daemon is running).
   ping) works but no traffic is bridged. As root, a utun is created;
   `default_route=1` additionally installs two /1 routes through it (untested).
 - launchd: `packaging/com.awus.awusd.plist`; `make install-daemon` /
-  `uninstall-daemon` print what they would do unless run as root.
+  `uninstall-daemon` (daemon at `/usr/local/libexec/awus/awusd`) print what they would do unless run as root.
+
+## Menu-bar app and installer
+
+`make app` builds `build/AWUS WiFi.app` (Swift, `swiftc` only, ad-hoc signed, `LSUIElement`, so no Dock icon). It
+talks to `awusd` over the socket (`/var/run/awusd.sock`; `--sock PATH` or `$AWUS_SOCK` to override). Menu: status line
+with signal bars (0-5 from RSSI), networks sorted by signal (lock = secured, check = current, 2.4G/5G tag), click to
+join (secured ones ask for the password, with "Remember"), Join Other Network..., Saved Networks (join, auto-join,
+remove), Turn Wi-Fi Off/On, Status... (link details, TX power slider, country), About, Quit. WPS and Ad-hoc are
+present but disabled ("not built yet"). Status is polled every 2 s while the menu is closed; the scan refreshes when the
+menu opens. If the daemon is not running the menu shows "Start driver...", which explains the sudo command.
+`"build/AWUS WiFi.app/Contents/MacOS/AWUS WiFi" --dump-menu` prints the menu as text. For development without the
+adapter run `python3 tools/fake_awusd.py` (canned data, never touches USB) and start the app with `--sock`.
+
+`make pkg` builds `build/AWUS-WiFi-Driver.pkg` (unsigned, Apple Silicon): `awusd` in `/usr/local/libexec/awus`,
+`awusctl` in `/usr/local/bin`, the app in `/Applications`, a LaunchDaemon for `awusd`, a LaunchAgent that opens the
+app at login, and a postinstall that loads the daemon (`launchctl bootstrap system ...`) and lets the installing user
+talk to it (`--sock-uid`; one user only). libusb is linked statically, so no Homebrew is needed on the target Mac.
+Because the pkg is not signed or notarized, Gatekeeper blocks a double-click: right-click the pkg and choose Open, or
+run `xattr -d com.apple.quarantine AWUS-WiFi-Driver.pkg`. Binaries are built for the macOS version of the build machine.
+
+Uninstall: `sudo sh /usr/local/share/awus/uninstall.sh` (or double-click `build/AWUS-Uninstall.command`). It stops the
+daemon and app, removes every installed file, and asks before deleting saved networks (`--purge` skips the question).
 
 ## Build
 
