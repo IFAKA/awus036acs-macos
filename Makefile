@@ -57,8 +57,8 @@ build/test_net: src/test_net.c src/net.c src/net.h src/tun.c src/tun.h | build
 test-net: build/test_net
 	./build/test_net
 
-WIFI_SRC = $(subst src/inject.c,src/sta.c src/wep.c src/link.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
-build/wifi: $(WIFI_SRC) src/link.h src/scanparse.h src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+WIFI_SRC = $(subst src/inject.c,src/sta.c src/wep.c src/tkip.c src/link.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+build/wifi: $(WIFI_SRC) src/link.h src/tkip.h src/wep.h src/scanparse.h src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
 .PHONY: wifi
 wifi: build/wifi

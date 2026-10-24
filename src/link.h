@@ -66,6 +66,7 @@ typedef struct link {
     int hs_rate, data_rate, m1_count, handshake_done, rsn_mismatch, tk_ready;
     long t_assoc, t_m1, t_hs, t_next_null;
     uint64_t tx_pn;
+    uint8_t mic_rx[8], mic_tx[8];   // pairwise Michael keys (TKIP only)
     uint64_t rx_pn[16];
     struct { int have; uint8_t tk[16]; uint8_t mic_rx[8]; uint64_t pn; } gk[4];
     uint32_t lease_ip;

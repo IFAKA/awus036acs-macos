@@ -14,6 +14,7 @@
 #include "phy.h"
 #include "scanparse.h"
 #include "tun.h"
+#include "tkip.h"
 #include "wep.h"
 
 #define ECHO_ID 0x4157
@@ -73,7 +74,7 @@ static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
 {
     uint8_t out[512]; size_t ol = 0; int ev = 0;
     eapol_key_t k;
-    if (l->sec != LINK_SEC_WPA2) return;        // nobody asked for a handshake
+    if (l->sec != LINK_SEC_WPA2 && l->sec != LINK_SEC_WPA) return;        // nobody asked for a handshake
     if (eapol_key_parse(e, el, &k) == 0) {
         LOG("rx EAPOL key_info=0x%04x replay=%llu kdlen=%zu", k.info, (unsigned long long)k.replay, k.key_data_len);
         if ((k.info & EAPOL_KEY_PAIRWISE) && !(k.info & EAPOL_KEY_MIC)) {
@@ -84,10 +85,12 @@ static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
     int rc = wpa_rx_eapol(&l->w, e, el, out, &ol, &ev);
     if (rc) { LOG("wpa_rx_eapol rejected rc=%d", rc); return; }
     if (ev & WPA_EV_PTK) {
-        if (l->w.ap_rsn_len != (size_t)l->s.rsn_len || memcmp(l->w.ap_rsn, l->s.rsn, l->w.ap_rsn_len)) {
+        const uint8_t *beacon_ie = l->sec == LINK_SEC_WPA ? l->s.wpa_ie : l->s.rsn;
+        size_t beacon_len = l->sec == LINK_SEC_WPA ? (size_t)l->s.wpa_ie_len : (size_t)l->s.rsn_len;
+        if (l->w.ap_rsn_len != beacon_len || memcmp(l->w.ap_rsn, beacon_ie, l->w.ap_rsn_len)) {
             l->rsn_mismatch = 1;
-            LOG("RSN IE in M3 differs from probe response; refusing (not sending M4)");
-            LOG("probe rsn: "); hexs(l->s.rsn, l->s.rsn_len); fputc('\n', stderr);
+            LOG("security IE in M3 differs from probe response; refusing (not sending M4)");
+            LOG("probe ie:  "); hexs(beacon_ie, (int)beacon_len); fputc('\n', stderr);
             LOG("m3 rsn:    "); hexs(l->w.ap_rsn, l->w.ap_rsn_len); fputc('\n', stderr);
             return;
         }
@@ -96,13 +99,17 @@ static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
     if (ol) send_eapol(l, out, ol, what);
     if (ev & WPA_EV_PTK) {                 // install the TK only after M4 went out
         l->tk_ready = 1; l->tx_pn = 1; memset(l->rx_pn, 0, sizeof l->rx_pn);
-        LOG("PTK installed (TK)");
+        if (l->pw_cipher == LINK_CIPHER_TKIP) { memcpy(l->mic_rx, l->w.ptk + 48, 8); memcpy(l->mic_tx, l->w.ptk + 56, 8); }
+        LOG("PTK installed (TK%s)", l->pw_cipher == LINK_CIPHER_TKIP ? " + Michael keys" : "");
     }
     if (ev & WPA_EV_GTK) {
         size_t gl; int gid;
         const uint8_t *g = wpa_get_gtk(&l->w, &gl, &gid);
-        if (g && gl == 16) { memcpy(l->gk[gid & 3].tk, g, 16); l->gk[gid & 3].have = 1; l->gk[gid & 3].pn = 0; LOG("GTK installed id=%d", gid); }
-        else LOG("GTK unusable len=%zu", gl);
+        if (g && ((gl == 16 && l->grp_cipher == LINK_CIPHER_CCMP) || (gl == 32 && l->grp_cipher == LINK_CIPHER_TKIP))) {
+            memcpy(l->gk[gid & 3].tk, g, 16);
+            if (gl == 32) memcpy(l->gk[gid & 3].mic_rx, g + 16, 8);     // the AP's transmit Michael key
+            l->gk[gid & 3].have = 1; l->gk[gid & 3].pn = 0; LOG("GTK installed id=%d (%s)", gid, link_cipher_str(l->grp_cipher));
+        } else LOG("GTK unusable len=%zu for group cipher %s", gl, link_cipher_str(l->grp_cipher));
     }
     if (l->w.state == 2 && (l->gk[0].have + l->gk[1].have + l->gk[2].have + l->gk[3].have) && !l->handshake_done) {
         l->handshake_done = 1; l->t_hs = now_ms();
@@ -153,13 +160,23 @@ static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
         if (!key || !l->tk_ready) { l->st_no_key++; return; }
         lastpn = &l->rx_pn[tid];
     }
-    uint8_t plain[2400]; uint64_t pn = 0; int k2 = 0;
+    uint8_t plain[2400]; uint64_t pn = 0; int k2 = 0, pl;
     if (len - hl > (int)sizeof plain) return;
-    int pl = ccmp_decrypt(key, d, 24 + (qos ? 2 : 0), d + hl, len - hl, plain, &pn, &k2);
-    if (pl < 0) {
-        l->st_dec_fail++;
-        if (l->st_dec_fail <= 8) { LOG("ccmp decrypt FAIL fc=%02x%02x len=%d hl=%d group=%d kid=%d tid=%d", d[0], d[1], len, hl, group, kid, tid); }
-        return;
+    if ((group ? l->grp_cipher : l->pw_cipher) == LINK_CIPHER_TKIP) {
+        const uint8_t *mk = group ? l->gk[kid].mic_rx : l->mic_rx;
+        pl = tkip_decrypt(key, mk, d + 10, a1, a3, tid, d + hl, len - hl, plain, &pn, &k2);
+        if (pl < 0) {
+            l->st_dec_fail++;
+            if (l->st_dec_fail <= 8) { LOG("tkip decrypt FAIL fc=%02x%02x len=%d group=%d kid=%d tid=%d rc=%d", d[0], d[1], len, group, kid, tid, pl); }
+            return;
+        }
+    } else {
+        pl = ccmp_decrypt(key, d, 24 + (qos ? 2 : 0), d + hl, len - hl, plain, &pn, &k2);
+        if (pl < 0) {
+            l->st_dec_fail++;
+            if (l->st_dec_fail <= 8) { LOG("ccmp decrypt FAIL fc=%02x%02x len=%d hl=%d group=%d kid=%d tid=%d", d[0], d[1], len, hl, group, kid, tid); }
+            return;
+        }
     }
     if (pn <= *lastpn) { l->st_replay++; LOG("replay reject pn=%llu last=%llu", (unsigned long long)pn, (unsigned long long)*lastpn); return; }
     *lastpn = pn;
@@ -190,7 +207,9 @@ static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size
     if (!l->tk_ready) return;
     hdr[0] = 0x08; hdr[1] = 0x41;
     memcpy(hdr + 4, l->s.bssid, 6); memcpy(hdr + 10, l->s.mac, 6); memcpy(hdr + 16, dst, 6);
-    int n = ccmp_encrypt(wpa_get_tk(&l->w), hdr, 24, l->tx_pn++, 0, payload, len, out);
+    int n = l->pw_cipher == LINK_CIPHER_TKIP
+        ? tkip_encrypt(wpa_get_tk(&l->w), l->mic_tx, l->s.mac, dst, l->s.mac, 0, l->tx_pn++, 0, payload, len, out)
+        : ccmp_encrypt(wpa_get_tk(&l->w), hdr, 24, l->tx_pn++, 0, payload, len, out);
     if (n < 0) return;
     l->st_tx_enc++;
     int rc = sta_send_data(&l->s, dst, out, n, 1, l->data_rate);
@@ -299,7 +318,30 @@ static int jfail_status(link_t *l, const char *step)
     return jfail(l, step, b);
 }
 
-static const uint8_t our_rsn_ccmp[] = {48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0};
+// Cipher suite type byte (1 WEP40, 2 TKIP, 4 CCMP, 5 WEP104) of a group cipher to LINK_CIPHER_*, or -1 if we cannot do it.
+static int group_cipher(int suite)
+{
+    return suite == 4 ? LINK_CIPHER_CCMP : suite == 2 ? LINK_CIPHER_TKIP : -1;
+}
+
+// Our RSN IE (WPA2) or WPA vendor IE (WPA1) for the association request and message 2: one pairwise cipher, PSK AKM.
+// The group cipher must be the one the AP announced, or the AP drops us in message 2/3.
+static size_t build_sec_ie(uint8_t *o, int wpa1, int pw, int grp)
+{
+    const uint8_t oui[3] = {0x00, wpa1 ? 0x50 : 0x0F, wpa1 ? 0xF2 : 0xAC};
+    int g = grp == LINK_CIPHER_TKIP ? 2 : 4, p = pw == LINK_CIPHER_TKIP ? 2 : 4;
+    size_t n = 0;
+    if (wpa1) { o[n++] = 0xDD; o[n++] = 22; o[n++] = 0x00; o[n++] = 0x50; o[n++] = 0xF2; o[n++] = 1; }
+    else { o[n++] = 48; o[n++] = 20; }
+    o[n++] = 1; o[n++] = 0;                                              // version 1
+    memcpy(o + n, oui, 3); o[n + 3] = (uint8_t)g; n += 4;                // group cipher
+    o[n++] = 1; o[n++] = 0;                                              // one pairwise cipher
+    memcpy(o + n, oui, 3); o[n + 3] = (uint8_t)p; n += 4;
+    o[n++] = 1; o[n++] = 0;                                              // one AKM: PSK
+    memcpy(o + n, oui, 3); o[n + 3] = 2; n += 4;
+    if (!wpa1) { o[n++] = 0; o[n++] = 0; }                               // RSN capabilities (WPA1 has none)
+    return n;
+}
 
 // Decide security, ciphers and our association security element from what the AP advertised. 0 or -1 (jfail set).
 static int resolve_security(link_t *l)
@@ -308,9 +350,14 @@ static int resolve_security(link_t *l)
     scan_ap_t ap;
     scan_parse_ie(s->ies, s->ies_len, &ap);
     link_sec_t want = l->cfg.sec;
-    int have_psk_rsn = ap.rsn && (ap.rsn_akm & SCAN_AKM_PSK);
+    int rsn_psk = ap.rsn && (ap.rsn_akm & SCAN_AKM_PSK) && s->rsn_len;
+    int wpa_psk = ap.wpa1 && (ap.wpa_akm & SCAN_AKM_PSK) && s->wpa_ie_len;
+    // Usable RSN: PSK, a pairwise cipher we have (CCMP preferred, else TKIP), a group cipher we have.
+    int rsn_ok = rsn_psk && (ap.rsn_cipher & (SCAN_CIPHER_CCMP | SCAN_CIPHER_TKIP)) && group_cipher(ap.rsn_group) >= 0;
+    int wpa_ok = wpa_psk && (ap.wpa_cipher & SCAN_CIPHER_TKIP) && ap.wpa_group == 2;
     if (want == LINK_SEC_AUTO) {
-        if (have_psk_rsn && (ap.rsn_cipher & SCAN_CIPHER_CCMP)) want = LINK_SEC_WPA2;
+        if (rsn_ok) want = LINK_SEC_WPA2;
+        else if (!ap.rsn && wpa_ok) want = LINK_SEC_WPA;
         else if (ap.rsn || ap.wpa1) return jfail(l, "scan", "unsupported_security");
         else if (s->ap_cap & 0x0010) want = LINK_SEC_WEP;
         else want = LINK_SEC_OPEN;
@@ -334,10 +381,18 @@ static int resolve_security(link_t *l)
         break;
     case LINK_SEC_WPA2:
         if (!s->rsn_len) return jfail(l, "scan", "ap_has_no_rsn_ie");
-        if (!have_psk_rsn) return jfail(l, "scan", "ap_rsn_not_psk");
-        if (!(ap.rsn_cipher & SCAN_CIPHER_CCMP) || ap.rsn_group != 4) return jfail(l, "scan", "unsupported_cipher");
-        l->pw_cipher = l->grp_cipher = LINK_CIPHER_CCMP;
-        memcpy(s->sec_ie, our_rsn_ccmp, sizeof our_rsn_ccmp); s->sec_ie_len = sizeof our_rsn_ccmp;
+        if (!rsn_psk) return jfail(l, "scan", "ap_rsn_not_psk");
+        if (!rsn_ok) return jfail(l, "scan", "unsupported_cipher");
+        l->pw_cipher = (ap.rsn_cipher & SCAN_CIPHER_CCMP) ? LINK_CIPHER_CCMP : LINK_CIPHER_TKIP;
+        l->grp_cipher = group_cipher(ap.rsn_group);
+        s->sec_ie_len = (int)build_sec_ie(s->sec_ie, 0, l->pw_cipher, l->grp_cipher);
+        break;
+    case LINK_SEC_WPA:
+        if (!s->wpa_ie_len) return jfail(l, "scan", "ap_has_no_wpa_ie");
+        if (!wpa_psk) return jfail(l, "scan", "ap_wpa_not_psk");
+        if (!wpa_ok) return jfail(l, "scan", "unsupported_cipher");
+        l->pw_cipher = l->grp_cipher = LINK_CIPHER_TKIP;
+        s->sec_ie_len = (int)build_sec_ie(s->sec_ie, 1, l->pw_cipher, l->grp_cipher);
         break;
     default:
         return jfail(l, "scan", "unsupported_security");
@@ -358,7 +413,12 @@ static int join_once(link_t *l)
     if (sta_scan(s, 4000)) return jfail(l, "scan", "no_probe_response");
     LOG("ap bssid=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d", s->bssid[0], s->bssid[1], s->bssid[2], s->bssid[3], s->bssid[4], s->bssid[5], s->rssi);
     if (resolve_security(l)) return -1;
-    if (l->sec == LINK_SEC_WPA2) wpa_init(&l->w, l->cfg.key, (const uint8_t *)s->ssid, strlen(s->ssid), s->bssid, s->mac, s->sec_ie, s->sec_ie_len);
+    int keyed = l->sec == LINK_SEC_WPA2 || l->sec == LINK_SEC_WPA;
+    if (keyed) {
+        if (!l->cfg.key) return jfail(l, "scan", "no_passphrase");
+        wpa_init_ex(&l->w, l->cfg.key, (const uint8_t *)s->ssid, strlen(s->ssid), s->bssid, s->mac, s->sec_ie, (size_t)s->sec_ie_len,
+                    l->pw_cipher == LINK_CIPHER_TKIP, l->sec == LINK_SEC_WPA);
+    }
     net_init(&l->n, s->mac);
     int arc = sta_auth(s);
     if (arc && l->sec == LINK_SEC_WEP && s->auth_algo == 0 && s->last_status == 13) {     // AP wants shared-key auth
@@ -373,7 +433,7 @@ static int join_once(link_t *l)
     SAY("assoc aid=%d\n", s->aid);
 
     long end;
-    if (l->sec == LINK_SEC_WPA2) {
+    if (keyed) {
         int dseen = s->deauth_seen + s->disassoc_seen;
         end = now_ms() + 10000;
         while (now_ms() < end && !l->handshake_done && !l->rsn_mismatch && !(l->stop && *l->stop) && s->deauth_seen + s->disassoc_seen == dseen)
