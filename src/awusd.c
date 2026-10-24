@@ -1107,8 +1107,9 @@ int main(int argc, char **argv)
             continue;
         }
         if (D.rf_off) { serve_ctl(100, 0); led_apply(); continue; }
-        if (D.linked) { serve_ctl(0, 0); connected_tick(); continue; }
+        if (D.linked) { serve_ctl(0, 0); if (D.dev && D.linked) connected_tick(); continue; }
         serve_ctl(50, 0);
+        if (!D.dev) continue;                    // a command (wake / unplug) closed the device
         if (D.dev && now_ms() - D.last_live > 1000) { D.last_live = now_ms(); (void)rtl_r8(&D.r, 0x0); }   // notice an unplug while idle
         idle_tick();
         led_apply();
