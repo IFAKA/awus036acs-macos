@@ -42,7 +42,7 @@ Design (one, not a menu): a root daemon `awusd` (launchd) owns the USB device: h
 
 Parity checklist (state: have / todo), each with its check:
  1 scan list with SSID/BSSID/ch/RSSI/security, 2.4+5 GHz ........ DONE 2026-10-25 (`awusctl scan`) -- check: lists MyNetwork + MyNetwork-5G
- 2 join WPA2-PSK 2.4 GHz ........................................ have (wifi --tun)
+ 2 join WPA2-PSK 2.4 GHz ........................................ have (wifi --tun); also as daemon (awusd) DONE 2026-10-25 air-verified
  3 join WPA2-PSK 5 GHz .......................................... DONE 2026-10-25 air-verified on ch 132 (DFS) -- ping 6/6, 0% loss
  4 join open network ............................................ DONE 2026-10-25 unit/logic only (no open AP of our own to test on air)
  5 join WEP (40/104, open+shared) ............................... DONE 2026-10-25 unit-vector tested only (not on air)
@@ -52,14 +52,14 @@ Parity checklist (state: have / todo), each with its check:
  9 802.1X EAP PEAP/TTLS/TLS/LEAP ................................ todo (decide: embed wpa_supplicant via ctrl iface)
 10 ad-hoc create/join ........................................... todo
 11 WPS PBC + PIN ............................................... todo
-12 saved profiles + auto-join + auto-reconnect + hot-plug ....... todo -- check: unplug/replug and sleep/wake rejoin
-13 RF on/off, TX power ......................................... todo
-14 RSSI / link speed / status query ............................ todo
-15 country code + 5 GHz channel rules + DFS ..................... todo
+12 saved profiles + auto-join + auto-reconnect + hot-plug ....... DONE 2026-10-25 awusd; air-verified: autojoin, drop+backoff 1/2/4/8, debug unplug and debug wake rejoin; NEEDS USER: real unplug and real sleep
+13 RF on/off, TX power ......................................... DONE 2026-10-25 air-verified (rf off: 0 frames heard, reg readback; txpower reg 0xC20 readback, persists)
+14 RSSI / link speed / status query ............................ DONE 2026-10-25 air-verified (`awusctl status`)
+15 country code + 5 GHz channel rules + DFS ..................... DONE 2026-10-25 air-verified (scan marks, join blocked on 132 under 00); table is a summary, not legal text
 16 40/80 MHz, short GI, aggregation (throughput) ............... todo -- check: iperf3 number vs vendor claim
-17 LED ......................................................... todo
+17 LED ......................................................... DONE 2026-10-25 register readback only; NEEDS USER: visual check
 18 menu-bar app + installer pkg + uninstall ..................... todo
-19 DHCP renew, IPv6, DNS applied to the service ................. todo (now IPv4 host routes only)
+19 DHCP renew, IPv6, DNS applied to the service ................. PARTLY 2026-10-25 DHCP renew/rebind air-verified; IPv6/DNS todo; root utun + default route untested
 20 USB mode-switch (fake CD) handling ........................... check if 0bda:0811 ever shows as disk
 
 DONE 2026-10-25 checklist item 1: `build/awusctl scan [--band 2|5|all] [--dwell MS] [--passes N] [--json]` (src/awusctl.c) + pure parser src/scanparse.c with `make test-scanparse` (also in `make test`). Hardware: `--band all --dwell 250` listed 59-63 BSSIDs incl. our own 2.4G ch 7 and 5G ch 132 APs as WPA2-PSK/CCMP; `--json` passes `python3 -m json.tool`. Wildcard probes only (not on DFS 52-144), no deauth.
@@ -73,3 +73,5 @@ DONE 2026-10-25 checklist items 3-7 (lane vendor-parity). What exists: the join 
 - Item 5 (WEP 40/104, open + shared key): src/wep.c with `make test-wep`: RC4 vectors from the literature (Key/Plaintext, Wiki/pedia, Secret/Attack at dawn), CRC-32 check value 0xCBF43926, WEP bodies generated with an independent Python RC4+zlib implementation, tamper/ICV tests, shared-key challenge body round trip. NOT air-tested: no WEP AP of our own, and we do not join anyone else's.
 - Item 6 (WPA1/TKIP + mixed mode): src/tkip.c with `make test-tkip`: Michael published chain of vectors (802.11i), phase 1/2 mixing and the MPDU checked against the hostap reference code (20000 random inputs, zero mismatches, harness not committed) and the MPDU body recomputed independently in Python; src/wpa.c version-1 and descriptor-254 handshake tests in `make test-wpa` (HMAC-MD5 MIC recomputed with CommonCrypto, RC4 key data, G1 raw GTK) which are self-consistency tests against an authenticator written in the test, not published vectors. Mixed mode = pairwise CCMP with group TKIP: our RSN IE carries the AP's announced group cipher and the 32-byte GTK is accepted. NOT air-tested: our router offers WPA2-CCMP only.
 - `awusctl join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|auto] [--key-env VAR] [--wep-keyid N]`: no root (no utun), DHCP, 6 pings to the gateway, then a Deauthentication (reason 3) and exit. The secret is read from the named environment variable only. Progress/results go to the terminal, register/protocol log to /tmp/awusctl.log.
+
+DONE 2026-10-25 items 2-as-daemon, 12-15, 17, 19(part) (lane vendor-parity): src/awusd.c, src/scanlib.[ch], src/country.[ch], src/profile.[ch], src/proto.[ch], src/led.[ch], src/tun.c default-split routes, packaging/com.awus.awusd.plist. Bug found on air and fixed: a command that closed the device (wake/unplug) was followed by use of the freed device in the main loop. Not tested: root utun/default route, real sleep, real unplug, launchd install, LED visual.

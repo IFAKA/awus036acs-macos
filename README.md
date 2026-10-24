@@ -39,7 +39,7 @@ Proven on real hardware (Alfa AWUS036ACS + Apple Silicon Mac, macOS 26):
 
 Known gaps — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the checklist:
 
-- The chip's LED never lights (register path known, not wired up).
+- The LED is driven by the daemon (verified by register readback; visual confirmation pending).
 - 5 GHz is scan/receive-only and lightly tested; 40/80 MHz and WPA3 are
   unimplemented.
 - No throughput tuning, no long-session soak testing, no GTK rekey exercised.
@@ -47,6 +47,38 @@ Known gaps — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the checklist:
   `aircrack-ng`/`airodump-ng` to attach to directly).
 - Per-rate TX power, crystal cap, and BB swing are fixed defaults, not read
   from the adapter's efuse.
+
+## The daemon: awusd and awusctl
+
+`build/awusd` is a single-threaded daemon that owns the adapter: hot-plug,
+saved profiles, auto-join, auto-reconnect (backoff 1, 2, 4, 8 s, then up to
+30 s; after 3 failed tries it re-scans), sleep/wake re-initialisation, DHCP
+renew/rebind, RF on/off, TX power, country rules and the LED. `build/awusctl`
+is its client (`make awusd` builds both; `awusctl scan|join` still work
+directly when no daemon is running).
+
+- Socket: `/var/run/awusd.sock` for root, else `$TMPDIR/awusd.sock`; override
+  with `--sock`. Mode 0600, peer uid checked (`--sock-uid UID` lets one more
+  user in). One request line per connection, `OK` or `ERR ...` plus
+  `key=value` lines.
+- Commands: `status`, `scan`, `join`, `leave`, `ping`, `rf on|off|get`,
+  `txpower get|set N`, `country get|set CC`, `profile add|list|remove`,
+  `autojoin on|off|get`, `quit`. Debug: `debug drop|unplug [ms]|wake|renew|
+  rebind|led on|off|auto|failnext N`.
+- Profiles: `profiles.json` (0600, clear-text PSK). A clear-text file was
+  chosen over the Keychain because the `security` CLI puts the secret on argv
+  and shows a GUI prompt, which a daemon cannot answer. Pass keys with
+  `--key-env VAR`; keys are never logged.
+- Country: a small built-in table (00 ES GB DE FR IT US JP), not the legal
+  text of any regulator; check your local rules. Blocked channels (for
+  example DFS under `00`) are listened to but never transmitted on, and
+  `join` there fails with `channel_blocked_by_country`. A hidden-SSID join's
+  own scan may transmit on a blocked channel before that check.
+- Root vs link-only: without root there is no utun, so the link (IP via DHCP,
+  ping) works but no traffic is bridged. As root, a utun is created;
+  `default_route=1` additionally installs two /1 routes through it (untested).
+- launchd: `packaging/com.awus.awusd.plist`; `make install-daemon` /
+  `uninstall-daemon` print what they would do unless run as root.
 
 ## Build
 

@@ -98,3 +98,13 @@ build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)
 .PHONY: awusd
 awusd: build/awusd
+
+# Install the daemon under launchd. These targets only PRINT what they would do unless run as root.
+PLIST = packaging/com.awus.awusd.plist
+.PHONY: install-daemon uninstall-daemon
+install-daemon: build/awusd build/awusctl
+	@if [ "$$(id -u)" != 0 ]; then echo "would (as root): install -m755 build/awusd /usr/local/sbin/awusd; install -m755 build/awusctl /usr/local/bin/awusctl; mkdir -m700 /var/db/awusd; install -m644 $(PLIST) /Library/LaunchDaemons/; launchctl bootstrap system /Library/LaunchDaemons/com.awus.awusd.plist"; \
+	else install -d -m755 /usr/local/sbin /usr/local/bin && install -m755 build/awusd /usr/local/sbin/awusd && install -m755 build/awusctl /usr/local/bin/awusctl && install -d -m700 /var/db/awusd && install -m644 $(PLIST) /Library/LaunchDaemons/ && launchctl bootstrap system /Library/LaunchDaemons/com.awus.awusd.plist; fi
+uninstall-daemon:
+	@if [ "$$(id -u)" != 0 ]; then echo "would (as root): launchctl bootout system/com.awus.awusd; rm /Library/LaunchDaemons/com.awus.awusd.plist /usr/local/sbin/awusd /usr/local/bin/awusctl (keeps /var/db/awusd profiles)"; \
+	else launchctl bootout system/com.awus.awusd; rm -f /Library/LaunchDaemons/com.awus.awusd.plist /usr/local/sbin/awusd /usr/local/bin/awusctl; fi
