@@ -1,5 +1,8 @@
 // Stage 3 CLI: power on, firmware, PHY/MAC init, monitor-mode capture to pcap.
-//   monitor [-c CH] [-t SECONDS] [-o out.pcap] [--hop] [-v]
+//   monitor [-c CH] [-t SECONDS] [-o out.pcap] [--hop | --hop5 | --hopall] [-v]
+//   --hop    2.4 GHz channels 1..13
+//   --hop5   5 GHz channels 36,40,44,48,52..64,100..144,149..165 (includes DFS; passive only, no TX scheduled there)
+//   --hopall 2.4 GHz + 5 GHz
 // Prints one final line: STAGE3 OK frames=N beacons=B ssids=a,b,c  |  STAGE3 FAIL <step> <reason>
 // Register log: /tmp/monitor.log
 #include <stdio.h>
@@ -23,6 +26,14 @@ static int have_pcap;
 static unsigned long per_chan[200];
 
 static long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000L + t.tv_nsec / 1000000L; }
+
+// Hop lists. 5 GHz: UNII-1 (36-48), UNII-2/2e (52-64, 100-144, all DFS), UNII-3 (149-165).
+static const int chan24[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
+static const int chan5[]  = {36,40,44,48,52,56,60,64,
+                             100,104,108,112,116,120,124,128,132,136,140,144,
+                             149,153,157,161,165};
+#define N24 (int)(sizeof(chan24)/sizeof(chan24[0]))
+#define N5  (int)(sizeof(chan5)/sizeof(chan5[0]))
 
 static void add_ssid(const uint8_t *s, int n)
 {
@@ -63,7 +74,7 @@ static int fail(rtl_t *r, const char *step, const char *why)
 
 int main(int argc, char **argv)
 {
-    int ch = 6, secs = 10, hop = 0;
+    int ch = 6, secs = 10, hop = 0, hop5 = 0, hopall = 0;
     const char *out = NULL;
     rtl_t r = {0};
     for (int i = 1; i < argc; i++) {
@@ -71,8 +82,16 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-t") && i + 1 < argc) secs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "--hop")) hop = 1;
+        else if (!strcmp(argv[i], "--hop5")) hop5 = 1;
+        else if (!strcmp(argv[i], "--hopall")) hopall = 1;
         else if (!strcmp(argv[i], "-v")) r.verbose = 2;
     }
+    int anyhop = hop || hop5 || hopall;
+    int hoplist[N24 + N5], nhop = 0, dwell_ms = 200;
+    if (hopall) { for (int i = 0; i < N24; i++) hoplist[nhop++] = chan24[i]; for (int i = 0; i < N5; i++) hoplist[nhop++] = chan5[i]; dwell_ms = 250; }
+    else if (hop5) { for (int i = 0; i < N5; i++) hoplist[nhop++] = chan5[i]; dwell_ms = 250; }
+    else if (hop) { for (int i = 0; i < N24; i++) hoplist[nhop++] = chan24[i]; dwell_ms = 200; }
+
     if (!freopen("/tmp/monitor.log", "w", stderr)) return 2;
     setvbuf(stderr, NULL, _IOLBF, 0);
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -81,7 +100,7 @@ int main(int argc, char **argv)
     int e;
     char b[96];
     const char *step;
-    if (rtl_bringup(&r, hop ? 1 : ch, &step, b, sizeof b)) return fail(&r, step, b);
+    if (rtl_bringup(&r, anyhop ? hoplist[0] : ch, &step, b, sizeof b)) return fail(&r, step, b);
     if ((e = rtl_set_monitor(&r))) { snprintf(b, sizeof b, "error %d", e); return fail(&r, "set_monitor", b); }
 
     if (out) {
@@ -89,14 +108,16 @@ int main(int argc, char **argv)
         have_pcap = 1;
     }
     long t0 = now_ms(), tch = t0;
-    int cur = hop ? 1 : ch;
+    int idx = 0;
+    int cur = anyhop ? hoplist[0] : ch;
     if (r.verbose < 2) r.verbose = 0;
-    fprintf(stderr, "STEP capture channel=%d secs=%d hop=%d\n", cur, secs, hop);
+    fprintf(stderr, "STEP capture channel=%d secs=%d hop=%d hop5=%d hopall=%d nhop=%d dwell_ms=%d\n", cur, secs, hop, hop5, hopall, nhop, dwell_ms);
     while (now_ms() - t0 < secs * 1000L) {
         int n = rtl_rx_poll(&r, on_frame, NULL, 50);
         if (n < 0) { r.verbose = 1; snprintf(b, sizeof b, "rx error %d", n); if (have_pcap) rtl_pcap_close(&pc); return fail(&r, "rx", b); }
-        if (hop && now_ms() - tch >= 200) {
-            cur = cur % 13 + 1;
+        if (anyhop && now_ms() - tch >= dwell_ms) {
+            idx = (idx + 1) % nhop;
+            cur = hoplist[idx];
             if (rtl_set_channel(&r, cur, 1)) { r.verbose = 1; if (have_pcap) rtl_pcap_close(&pc); return fail(&r, "hop", "set_channel"); }
             tch = now_ms();
         }
