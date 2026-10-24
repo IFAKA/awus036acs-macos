@@ -29,6 +29,8 @@ typedef struct {
     int rate;                           // mgmt TX rate (Mbps*10)
     int auth_status, auth_got, assoc_got, assoc_status;
     uint8_t last_hdr_dummy;
+    void (*def_cb)(void *ud, const uint8_t *frame, int len, const rtl_frame_t *f);   // used by sta_poll when cb == NULL
+    void *def_ud;
 } sta_t;
 
 // frame (FCS stripped) is a data frame for us: from-DS from our BSSID, addr1 == our MAC or group. hdr intact.

@@ -107,7 +107,7 @@ static void on_frame(void *ud, const rtl_frame_t *f)
 
 void sta_poll(sta_t *s, int ms, sta_data_cb cb, void *ud)
 {
-    rxctx_t x = { s, cb, ud };
+    rxctx_t x = { s, cb ? cb : s->def_cb, cb ? ud : s->def_ud };
     long end = now_ms() + ms;
     do {
         long left = end - now_ms();
