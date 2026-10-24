@@ -73,7 +73,12 @@ build/test_wep: src/wep.c src/wep.h src/test_wep.c | build
 .PHONY: test-wep
 test-wep: build/test_wep
 	./build/test_wep
-test: test-wpa test-net test-scanparse test-wep
+build/test_tkip: src/tkip.c src/tkip.h src/wep.c src/wep.h src/test_tkip.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/tkip.c src/wep.c src/test_tkip.c
+.PHONY: test-tkip
+test-tkip: build/test_tkip
+	./build/test_tkip
+test: test-wpa test-net test-scanparse test-wep test-tkip
 
 AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/scanparse.c,$(INJ_SRC))
 build/awusctl: $(AWUSCTL_SRC) src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
