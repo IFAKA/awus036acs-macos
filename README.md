@@ -66,9 +66,9 @@ bridges to a `utun` interface instead.
 - [ ] 40/80 MHz, short GI, aggregation and rate adaptation (HT 40 MHz MCS7 SGI air-verified on 5 GHz: ~49 Mbit/s up, ~39-49 down, 10x the legacy baseline; VHT/80 MHz and A-MPDU/block-ack not built)
 - [x] LED: solid when connected, blinks on activity, matches the vendor behaviour (checked by eye); known nit: it blinks instead of going off in RF-off
 - [ ] Menu-bar app and installer: built, tested against a fake daemon only; not installed or run against hardware
-- [ ] DHCP renew/rebind and IPv6 (RA, SLAAC, ping6) air-verified; DNS applied to the interface and root `utun` IPv6 written but untested (needs root)
+- [x] DHCP, IPv6 addresses, DNS via scutil and root `utun` traffic verified by hand (utun9 up, route to the router via utun9, ping 27-32 ms, clean removal on Ctrl-C); DHCP renew/rebind and DHCPv6 not long-run tested
 - [ ] USB mode-switch ("fake CD") handling: eject logic unit-tested; this unit never shows the CD stage, so it is not confirmed on a real stick
-- [ ] Long-run stability and root `utun` + default-route mode tested
+- [ ] Long-run stability and default-route mode tested (root `utun` link-route mode is verified; default-route mode and a soak test are not)
 
 Other known gaps:
 
