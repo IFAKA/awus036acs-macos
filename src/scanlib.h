@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "rtl.h"
 #include "scanparse.h"
+#include "wps.h"
 
 #define SCAN_MAX_APS 256
 
@@ -24,6 +25,7 @@ typedef struct {
     int seen_probe_resp;
     int allowed;                 // channel allowed by the country (1) or blocked (0)
     int dfs;                     // channel is DFS in that country
+    wps_ap_info_t wps;           // WSC element of the LATEST Beacon / Probe Response (wps.present = 0 if none): WPS state, locked, button window
 } scan_entry_t;
 
 typedef struct {

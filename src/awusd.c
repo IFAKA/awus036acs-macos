@@ -40,6 +40,7 @@
 #include "led.h"
 #include "dns.h"
 #include "modeswitch.h"
+#include "wpslink.h"
 
 #define now_ms link_now_ms
 #define LOSS_SILENCE_MS 6000      // nothing heard from the AP for this long = link lost
@@ -89,6 +90,8 @@ static struct {
     long gap0; int gap_init;
     FILE *logf;
     unsigned long last_dec_ok, last_tun;
+    struct { uint8_t bssid[6]; wps_limiter_t l; int used; } wps_lim[8];   // WPS self rate limiter, one per BSSID
+    int wps_lim_next;
 } D;
 
 static void LOGF(const char *fmt, ...)
@@ -716,6 +719,105 @@ static void cmd_join(FILE *o, const proto_req_t *q)
     kv(o, "tun", "%s", D.tun_fd >= 0 ? D.tun_name : (is_root() ? "none" : "link-only"));
 }
 
+// ---------------------------------------------------------------- WPS
+static wps_limiter_t *wps_lim_get(const uint8_t *bssid)
+{
+    for (int i = 0; i < 8; i++) if (D.wps_lim[i].used && !memcmp(D.wps_lim[i].bssid, bssid, 6)) return &D.wps_lim[i].l;
+    int k = D.wps_lim_next++ % 8;
+    memset(&D.wps_lim[k], 0, sizeof D.wps_lim[k]);
+    D.wps_lim[k].used = 1; memcpy(D.wps_lim[k].bssid, bssid, 6);
+    return &D.wps_lim[k].l;
+}
+
+// wps pbc|pin [pin=NNNN] [ssid=..] [bssid=..]  /  wps reset (clear the rate limiter, explicit user action)
+static void cmd_wps(FILE *o, const proto_req_t *q)
+{
+    const char *mode = proto_pos(q, 0), *v;
+    if (mode && !strcmp(mode, "reset")) { memset(D.wps_lim, 0, sizeof D.wps_lim); fprintf(o, "OK\n"); return; }
+    if (!mode || (strcmp(mode, "pbc") && strcmp(mode, "pin"))) { err(o, "usage: wps pbc|pin [pin=N] [ssid=NAME | bssid=B] | wps reset"); return; }
+    int pin_mode = !strcmp(mode, "pin");
+    const char *pin = proto_opt(q, "pin"), *ssid = proto_opt(q, "ssid");
+    uint8_t want_b[6]; int have_b = 0;
+    if ((v = proto_opt(q, "bssid"))) { if (parse_bssid(v, want_b)) { err(o, "bad bssid"); return; } have_b = 1; }
+    if (pin_mode) {
+        if (!pin || !wps_pin_valid(pin)) { err(o, "wps pin needs a valid PIN (4 digits, or 8 digits with the right check digit)"); return; }
+        if (!have_b && (!ssid || !*ssid)) { err(o, "wps pin needs ssid=NAME or bssid=B (a PIN is for one router you choose)"); return; }
+    } else pin = NULL;
+    if (!D.dev) { err(o, "no_device"); return; }
+    if (D.rf_off) { err(o, "rf_off"); return; }
+    int rc = do_scan(0, 200, 3);
+    if (rc == 1) { err(o, "interrupted"); return; }
+    if (rc < 0) { err(o, "usb_error"); return; }
+    // choose the AP
+    int pick = -1;
+    if (have_b || (ssid && *ssid)) {
+        for (int i = 0; i < D.scan.n; i++) {
+            const scan_entry_t *e = &D.scan.aps[i];
+            if (!e->allowed) continue;
+            if (have_b ? memcmp(e->bssid, want_b, 6) : ((size_t)e->ap.ssid_len != strlen(ssid) || memcmp(e->ap.ssid, ssid, e->ap.ssid_len) || scan_is_hidden(&e->ap))) continue;
+            if (pick < 0 || scan_rssi(e) > scan_rssi(&D.scan.aps[pick])) pick = i;
+        }
+        if (pick < 0) { err(o, "ssid_not_found"); return; }
+    }
+    if (!pin_mode) {                                  // PBC: refuse when two different routers have their button window open
+        static wps_ap_info_t infos[SCAN_MAX_APS]; static int idx[SCAN_MAX_APS];
+        int n = 0;
+        for (int i = 0; i < D.scan.n; i++) if (D.scan.aps[i].allowed && D.scan.aps[i].wps.present) { infos[n] = D.scan.aps[i].wps; memcpy(infos[n].bssid, D.scan.aps[i].bssid, 6); idx[n++] = i; }
+        int cnt = 0, pi = wps_pbc_pick(infos, (size_t)n, &cnt);
+        if (pi == -2) { err(o, "pbc_session_overlap: %d different routers have their WPS button window open (config error %d); wait until only yours is active", cnt, WPS_CFG_MULTIPLE_PBC); return; }
+        if (pick < 0) {
+            if (pi < 0) { err(o, "no_pbc_window: no router has its WPS button window open; press the WPS button on your router, then run this again within 2 minutes"); return; }
+            pick = idx[pi];
+        }
+    }
+    const scan_entry_t *e = &D.scan.aps[pick];
+    wps_ap_info_t info = e->wps; memcpy(info.bssid, e->bssid, 6);
+    wps_ap_reason_t why = wps_ap_check(&info, pin_mode ? WPS_MODE_PIN : WPS_MODE_PBC);
+    if (why != WPS_AP_OK) {
+        const char *tag = why == WPS_AP_LOCKED ? "ap_setup_locked" : why == WPS_AP_NO_WPS ? "ap_has_no_wps" : why == WPS_AP_PBC_INACTIVE ? "no_pbc_window" : "ap_not_ready";
+        err(o, "%s: %s", tag, wps_ap_reason_str(why)); return;
+    }
+    wps_limiter_t *lim = wps_lim_get(e->bssid);
+    int64_t w = wps_limiter_check(lim, (uint64_t)(now_ms() / 1000));
+    if (w) {
+        if (w < 0) err(o, "wps_blocked: too many failed attempts on this router; run `awusctl wps reset` to try again");
+        else err(o, "wps_rate_limited: wait %lld s before the next attempt on this router", (long long)w);
+        return;
+    }
+    wpsrun_cfg_t cfg = { .ssid = NULL, .channel = e->channel, .pin = pin, .stop = &D.abort_op, .out = D.logf };
+    char ss[33]; memcpy(ss, e->ap.ssid, e->ap.ssid_len); ss[e->ap.ssid_len] = 0;
+    cfg.ssid = ss; memcpy(cfg.bssid, e->bssid, 6);
+    if (D.linked) link_drop(1);
+    D.abort_op = 0; D.busy = B_JOIN; led_apply();
+    LOGF("wps %s start ch=%d", mode, e->channel);
+    wpsrun_res_t res;
+    rc = wpsrun(&D.r, &cfg, &res);
+    D.busy = B_NONE;
+    if (!rc || !strcmp(res.step, "eap")) wps_limiter_record(lim, (uint64_t)(now_ms() / 1000), rc == 0);
+    D.attempt = 0; D.next_try = 0;                    // let auto-join take the previous network back
+    led_apply();
+    if (rc) {
+        LOGF("wps failed: %s %s", res.step, res.reason);
+        set_err("wps: %s %s", res.step, res.reason);
+        err(o, "wps failed: %s:%s%s", res.step, res.reason, res.pin_wrong ? " (the PIN was rejected by the router)" : "");
+        return;
+    }
+    profile_t p; memset(&p, 0, sizeof p);
+    const char *bad = "";
+    memcpy(p.ssid, res.cred.ssid, res.cred.ssid_len);
+    if (wpsrun_cred_profile(&res.cred, p.security, sizeof p.security, p.key, sizeof p.key, &bad)) { err(o, "wps got a credential that cannot be used: %s", bad); memset(&res, 0, sizeof res); return; }
+    p.autojoin = 1; p.prefer_sae = 1;
+    int prc = profiles_put(&D.profiles, &p, &bad);
+    memset(&res, 0, sizeof res);
+    if (prc) { err(o, "wps ok but the profile is invalid: %s", prc == -2 ? "table full" : bad); memset(&p, 0, sizeof p); return; }
+    if (profiles_save(D.profiles_path, &D.profiles)) { err(o, "saved in memory but writing %s failed", D.profiles_path); memset(&p, 0, sizeof p); return; }
+    D.hold = 0; D.autojoin_on = 1;
+    LOGF("wps ok: profile saved ssid=%s security=%s", p.ssid, p.security);
+    fprintf(o, "OK\n");
+    kv(o, "ssid", "%s", p.ssid); kv(o, "security", "%s", p.security); kv(o, "profile", "saved"); kv(o, "key", "set");
+    memset(&p, 0, sizeof p);
+}
+
 static void cmd_ping(FILE *o, const proto_req_t *q)
 {
     if (!D.linked) { err(o, "not_connected"); return; }
@@ -918,6 +1020,7 @@ static void run_cmd(FILE *o, const proto_req_t *q)
     else if (!strcmp(c, "scan")) cmd_scan(o, q);
     else if (!strcmp(c, "join")) cmd_join(o, q);
     else if (!strcmp(c, "leave")) { do_leave(); fprintf(o, "OK\n"); kv(o, "state", "%s", state_name[cur_state()]); }
+    else if (!strcmp(c, "wps")) cmd_wps(o, q);
     else if (!strcmp(c, "ping")) cmd_ping(o, q);
     else if (!strcmp(c, "rf")) cmd_rf(o, q);
     else if (!strcmp(c, "txpower")) cmd_txpower(o, q);

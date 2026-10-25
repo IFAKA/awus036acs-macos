@@ -1,6 +1,6 @@
 # WPS enrollee engine (PBC and PIN)
 
-Status: engine built and unit/loopback-tested only. Not wired into `awusd`/`awusctl`. Never run against a real access point.
+Status: engine integrated (`src/wpslink.c`, daemon command `wps`, `awusctl wps pbc|pin|reset`) and tested by software loopback only (`make test-wps`, `make test-link-wps`). Never run against a real access point. Real run: press the router WPS button, then within 2 minutes `awusctl wps pbc`; or `awusctl wps pin --pin LABELPIN --ssid NAME`. Not built yet: an enrollee-generated PIN that you type into the router.
 
 Files: `src/wps.[ch]` (protocol), `src/bignum_dh.[ch]` (1536-bit modexp, DH group 5), `src/test_wps.c`,
 `tools/wps_check.py` (independent python check). Test: `make test-wps` (also part of `make test`).

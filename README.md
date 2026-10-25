@@ -58,7 +58,7 @@ bridges to a `utun` interface instead.
 - [ ] WPA3-SAE (integrated and covered by a software loopback test only, `make test-link-sae`; never on the air, our router is WPA2-only)
 - [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP
 - [ ] Ad-hoc create/join
-- [ ] WPS push-button and PIN
+- [ ] WPS push-button and PIN (integrated: `awusctl wps pbc|pin`, covered by software loopback tests only, `make test-link-wps`; never run against a real router)
 - [x] Saved profiles, auto-join, auto-reconnect with backoff (air-verified; real unplug/sleep not yet tested by a human)
 - [x] Wi-Fi on/off and TX power control (air-verified)
 - [x] RSSI, link speed and status query (`awusctl status`)

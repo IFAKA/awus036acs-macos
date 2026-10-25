@@ -290,6 +290,7 @@ static int usage(FILE *o)
 "  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|sae|auto] [--prefer-psk] [--key-env VAR]\n"
 "       [--wep-keyid N] [--default-route]     with the daemon: connect and stay; without: join, ping 6x, leave\n"
 "  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates] [--bw 20|40|80]   goodput test (no daemon)\n"
+"  wps pbc | wps pin (--pin N | --pin-env VAR) [--ssid S | --bssid B]   WPS enrol (daemon): saves a profile on success; wps reset clears the limiter\n"
 "  leave                          disconnect and stop auto-join until join / autojoin on / profile add\n"
 "  ping [--host IP] [--count N]   ping the gateway (or IP) from the daemon's link\n"
 "  rf on|off                      radio on/off (off: deauth, RF block disabled, LED off)\n"
@@ -315,6 +316,7 @@ int main(int argc, char **argv)
     proto_sock_path(sockpath, sizeof sockpath);
     const char *cmd = argv[1];
     // generic option scan
+    const char *pin_arg = NULL, *pin_env = NULL;
     const char *ssid = NULL, *key_env = NULL, *sec = NULL, *bssid = NULL, *host = NULL, *band = NULL, *country = NULL, *security = NULL;
     int ch = 0, hidden = 0, json = 0, dwell = 0, passes = 0, count = 0, prio = 0, have_prio = 0, noauto = 0, defroute = 0, keyid = 0;
     const char *pos[4]; int npos = 0;
@@ -323,6 +325,8 @@ int main(int argc, char **argv)
 #define OPT(n) (!strcmp(a, n) && i + 1 < argc)
         if (OPT("--ssid")) ssid = argv[++i];
         else if (OPT("--key-env")) key_env = argv[++i];
+        else if (OPT("--pin")) pin_arg = argv[++i];
+        else if (OPT("--pin-env")) pin_env = argv[++i];
         else if (OPT("--sec")) sec = argv[++i];
         else if (OPT("--security")) security = argv[++i];
         else if (OPT("--bssid")) bssid = argv[++i];
@@ -414,6 +418,16 @@ int main(int argc, char **argv)
         if (noauto) rq_kv(&q, "autojoin", "0");
         if (defroute) rq_kv(&q, "default_route", "1");
         if (g_prefer_psk) rq_kv(&q, "prefer_sae", "0");
+        return simple_cmd(&q);
+    }
+    if (!strcmp(cmd, "wps")) {
+        if (npos < 1) return usage(stderr);
+        if (pin_env) { pin_arg = getenv(pin_env); if (!pin_arg || !*pin_arg) { fprintf(E, "awusctl wps: environment variable %s is empty or unset\n", pin_env); return 2; } }
+        req_t q = {0};
+        rq_word(&q, "wps"); rq_word(&q, pos[0]);
+        if (pin_arg) rq_kv(&q, "pin", pin_arg);
+        if (ssid) rq_kv(&q, "ssid", ssid);
+        if (bssid) rq_kv(&q, "bssid", bssid);
         return simple_cmd(&q);
     }
     if (!strcmp(cmd, "ping")) {

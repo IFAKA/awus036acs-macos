@@ -66,6 +66,11 @@ static void on_frame(void *ud, const rtl_frame_t *f)
     e->channel = a.channel ? a.channel : (e->ap.channel ? e->ap.channel : f->channel);
     if (f->rssi_valid) { e->rssi_sum += f->rssi_dbm; e->rssi_n++; }
     if (sub == 0x50) e->seen_probe_resp = 1;
+    {   // the WPS state changes while a button is pressed, so always keep the newest copy
+        wps_ap_info_t w; memset(&w, 0, sizeof w); memcpy(w.bssid, bssid, 6);
+        if (wps_ap_parse(f->data + 24 + 12, f->len - 24 - 4 - 12, &w) == 1) e->wps = w;
+        else if (sub == 0x50) { e->wps.present = 0; }
+    }
     classify(S, e);
 }
 
