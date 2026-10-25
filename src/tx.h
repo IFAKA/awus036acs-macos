@@ -29,6 +29,10 @@ int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
 // does not encrypt: sectype none) on the BE queue / LOW bulk endpoint. Same units and return codes as rtl_tx_frame.
 int rtl_tx_data(rtl_t *r, const uint8_t *frame, int len, int rate, int retries);
 
+// Download one beacon frame (no FCS; the timestamp field is filled by the chip) into the beacon queue page (QSEL = beacon, HIGH
+// endpoint). The caller arms the beacon engine first (see ibss.c). Same units and return codes as rtl_tx_frame.
+int rtl_tx_beacon(rtl_t *r, const uint8_t *frame, int len, int rate);
+
 // Hardware rate code for a rate value (legacy Mbps*10, HT 1000+mcs, VHT 2000+mcs); -1 if unsupported.
 int rtl_tx_hw_rate(int rate);
 

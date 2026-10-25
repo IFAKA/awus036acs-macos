@@ -118,7 +118,7 @@ build/test_phy: src/test_phy.c src/phy.c src/mac.c src/tables.c src/rtl.h src/ph
 .PHONY: test-phy
 test-phy: build/test_phy
 	./build/test_phy
-test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate test-dns test-net6 test-link-sae test-link-wps
+test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate test-dns test-net6 test-link-sae test-link-wps test-ibss
 
 AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/wps.c src/bignum_dh.c src/country.c src/proto.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
 build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
@@ -126,8 +126,8 @@ build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.
 .PHONY: awusctl
 awusctl: build/awusctl
 
-AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/modeswitch.c src/dns.c src/scanlib.c src/wps.c src/bignum_dh.c src/wpslink.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
-AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/wps.h src/wpslink.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
+AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/modeswitch.c src/dns.c src/scanlib.c src/wps.c src/bignum_dh.c src/wpslink.c src/ibss.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
+AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/wps.h src/wpslink.h src/ibss.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
 build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)
 .PHONY: awusd
@@ -208,3 +208,16 @@ build/test_link_wps: $(WPSSIM_SRC) src/wpslink.h src/wps.h src/wps_testreg.h src
 .PHONY: test-link-wps
 test-link-wps: build/test_link_wps
 	./build/test_link_wps
+
+# Ad-hoc (IBSS): frame builder / parser unit test, and the on-air bench tool
+IBSSTEST_SRC = $(subst src/inject.c,src/test_ibss.c src/ibss.c,$(INJ_SRC))
+build/test_ibss: $(IBSSTEST_SRC) src/ibss.h | build
+	$(CC) -O1 -g -Wall $(shell pkg-config --cflags libusb-1.0) -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ $(IBSSTEST_SRC) $(LIBS)
+.PHONY: test-ibss
+test-ibss: build/test_ibss
+	./build/test_ibss
+IBSSTOOL_SRC = $(subst src/inject.c,src/ibsstool.c src/ibss.c,$(INJ_SRC))
+build/ibsstool: $(IBSSTOOL_SRC) src/ibss.h | build
+	$(CC) $(CFLAGS) -o $@ $(IBSSTOOL_SRC) $(LIBS)
+.PHONY: ibsstool
+ibsstool: build/ibsstool

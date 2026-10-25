@@ -10,6 +10,7 @@
 #define TXDESC_SIZE 40
 #define QSLT_MGNT   0x12
 #define QSLT_BE     0x00
+#define QSLT_BEACON 0x10
 #define RATEID_B    8
 #define RATEID_G    7
 #define MGMT_MACID  1
@@ -62,7 +63,7 @@ static int build_desc(rtl_t *r, uint8_t *d, int len, int rate, int retries, int 
     if (qsel != QSLT_MGNT) set_bits(d, 8, 16, 1, 1);   // AGG_BREAK for data
     set_bits(d, 4, 16, 5, rate <= 110 ? RATEID_B : RATEID_G);   // (fixed rate is used, so the rate id only matters for fallback)
     // dword 2: SPE_RPT -> ask the chip for a C2H TX report
-    set_bits(d, 8, 19, 1, 1);
+    if (qsel != QSLT_BEACON) set_bits(d, 8, 19, 1, 1);   // (a stored beacon would report on every transmission)
     // dword 3
     set_bits(d, 12, 8, 1, 1);                         // USE_RATE
     set_bits(d, 12, 10, 1, 1);                        // DISABLE_FB (fixed rate)
@@ -94,6 +95,8 @@ int rtl_tx_build_desc(uint8_t *d, int len, int rate, int retries, int bmc)
 // (in descriptor order 0x05 HIGH, 0x06 NORMAL, 0x08 LOW, 0x09 EXTRA), RtOutPipe[0] otherwise.
 static int out_ep(rtl_t *r, int data)
 {
+    const int beacon = data == 2;     // 2 = beacon queue: the HIGH endpoint (first OUT endpoint)
+    if (beacon) data = 0;
     uint8_t eps[8]; int n = 0;
     struct libusb_config_descriptor *cf = NULL;
     if (libusb_get_active_config_descriptor(libusb_get_device(r->h), &cf) < 0) return -1;
@@ -105,7 +108,7 @@ static int out_ep(rtl_t *r, int data)
     libusb_free_config_descriptor(cf);
     if (n == 0) return -1;
     if (data) return n >= 3 ? eps[2] : eps[n - 1];   // BE -> LOW queue (see mac.c queue map)
-    return n >= 4 ? eps[3] : eps[0];
+    return beacon ? eps[0] : (n >= 4 ? eps[3] : eps[0]);
 }
 
 static int tx_common(rtl_t *r, const uint8_t *frame, int len, int rate, int retries, int data)
@@ -116,7 +119,7 @@ static int tx_common(rtl_t *r, const uint8_t *frame, int len, int rate, int retr
     if (ep < 0) return -3;
     int bmc = frame[4] & 1;                           // addr1 group bit
     int pad = ((TXDESC_SIZE + len) % 512 == 0);       // avoid a bulk size that needs a zero-length packet (Linux pads 8 bytes)
-    if (build_desc(r, buf, len, rate, retries, bmc, data ? QSLT_BE : QSLT_MGNT) < 0) return -4;
+    if (build_desc(r, buf, len, rate, retries, bmc, data == 2 ? QSLT_BEACON : data ? QSLT_BE : QSLT_MGNT) < 0) return -4;
     if (pad) {
         // PKT_OFFSET = 1 (8-byte units of padding) at dword1 bits 24..28, then recompute checksum
         set_bits(buf, 4, 24, 5, 1);
@@ -150,4 +153,9 @@ int rtl_tx_frame(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
 int rtl_tx_data(rtl_t *r, const uint8_t *frame, int len, int rate, int retries)
 {
     return tx_common(r, frame, len, rate, retries, 1);
+}
+
+int rtl_tx_beacon(rtl_t *r, const uint8_t *frame, int len, int rate)
+{
+    return tx_common(r, frame, len, rate, 0, 2);
 }
