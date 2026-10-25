@@ -57,7 +57,7 @@ build/test_net: src/test_net.c src/net.c src/net.h src/tun.c src/tun.h | build
 test-net: build/test_net
 	./build/test_net
 
-WIFI_SRC = $(subst src/inject.c,src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+WIFI_SRC = $(subst src/inject.c,src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
 build/wifi: $(WIFI_SRC) src/link.h src/tkip.h src/wep.h src/scanparse.h src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
 .PHONY: wifi
@@ -98,6 +98,12 @@ test-rate: build/test_rate
 
 build/test_dns: src/dns.c src/dns.h src/test_dns.c | build
 	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/dns.c src/test_dns.c
+build/test_net6: src/net6.c src/net6.h src/test_net6.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/net6.c src/test_net6.c
+.PHONY: test-net6
+test-net6: build/test_net6
+	./build/test_net6
+
 .PHONY: test-dns
 test-dns: build/test_dns
 	./build/test_dns
@@ -112,15 +118,15 @@ build/test_phy: src/test_phy.c src/phy.c src/mac.c src/tables.c src/rtl.h src/ph
 .PHONY: test-phy
 test-phy: build/test_phy
 	./build/test_phy
-test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate test-dns
+test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate test-dns test-net6
 
-AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/country.c src/proto.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/country.c src/proto.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
 build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSCTL_SRC) $(LIBS)
 .PHONY: awusctl
 awusctl: build/awusctl
 
-AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/dns.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/dns.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
 AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
 build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)

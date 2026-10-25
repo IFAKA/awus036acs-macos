@@ -14,6 +14,7 @@
 #include "sta.h"
 #include "wpa.h"
 #include "net.h"
+#include "net6.h"
 #include "rate.h"
 
 typedef enum {
@@ -80,6 +81,7 @@ typedef struct link {
     tx_plan_t plan;                 // negotiated mode / width / top MCS (MODE_LEGACY until the handshake is done)
     ap_caps_t ap_caps;
     uint32_t lease_ip;
+    n6_t n6; n6_ops_t ops6; unsigned long st_v6_rx;   // IPv6: link-local, SLAAC, neighbour discovery, echo
     uint32_t ping_target;
     long ping_sent_at[LINK_PING_MAX]; int ping_got[LINK_PING_MAX]; long ping_rtt[LINK_PING_MAX];
 } link_t;
@@ -99,6 +101,8 @@ int  link_pump(link_t *l, int ms);
 // Ping target (host order) `count` times: the first reply is waited for 3 s, the others 1 s.
 // 0 = ok, 1 = no reply to the first echo, -1 = deauthenticated / stopped.
 int  link_ping(link_t *l, uint32_t target, int count, link_ping_t *res);
+// IPv6 ping (16-byte address, or NULL = the router's link-local from its Router Advertisement). Same codes as link_ping.
+int  link_ping6(link_t *l, const uint8_t *dst, int count, link_ping_t *res);
 // Politely leave: send a Deauthentication (reason 3, station leaving) to the AP we joined.
 void link_leave(link_t *l);
 // Human text for a security mode / cipher.

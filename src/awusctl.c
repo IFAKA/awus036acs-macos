@@ -6,6 +6,7 @@
 // `join` also work WITHOUT the daemon (they then drive the USB device directly, one shot, as before). Run `awusctl help`.
 // Keys (passphrase / WEP key) are read from the environment variable named by --key-env and sent over the 0600 socket;
 // they never appear on a command line. Only join networks you own or are allowed to test. Direct-mode log: /tmp/awusctl.log
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,7 +192,7 @@ static int cmd_scan_direct(const char *band_s, int dwell, int passes, int json, 
 static volatile sig_atomic_t stop_req;
 static void on_sig(int s) { (void)s; stop_req = 1; }
 
-static int g_bench, g_bench_secs = 5, g_legacy, g_maxbw, g_rate, g_vht;
+static int g_bench, g_bench_secs = 5, g_legacy, g_maxbw, g_rate, g_vht, g_ping6;
 static const char *g_bench_down = "10,20,40,80";
 
 static void bench_report(link_t *L, uint32_t peer)
@@ -258,6 +259,17 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
             link_sec_str(L.sec), link_cipher_str(L.pw_cipher), link_cipher_str(L.grp_cipher), L.s.channel, ips, gws,
             pr.recv, pr.sent, pr.sent ? 100 - 100 * pr.recv / pr.sent : 100, pr.avg_rtt_ms);
     rc = pr.recv == pr.sent ? 0 : 3;
+    if (g_ping6) {                      // IPv6: Router Solicitation, SLAAC, then ping the router's link-local address
+        link_ping_t p6;
+        int c6 = link_ping6(&L, NULL, 6, &p6);
+        char ll[48], gua[48], rt[48];
+        inet_ntop(AF_INET6, L.n6.ll, ll, sizeof ll);
+        inet_ntop(AF_INET6, L.n6.has_gua ? L.n6.gua : L.n6.ll, gua, sizeof gua);
+        inet_ntop(AF_INET6, L.n6.router, rt, sizeof rt);
+        fprintf(E, "ping6 ll=%s addr=%s router=%s ra=%u prefix_len=%d dns6=%d: %s %d/%d avg_rtt %ldms\n", ll, gua, L.n6.has_router ? rt : "-",
+                L.n6.ra_count, L.n6.prefix_len, L.n6.ndns, c6 ? (c6 > 0 ? "no_reply" : "aborted") : "ok", p6.recv, p6.sent, p6.avg_rtt_ms);
+        if (c6 || p6.recv != p6.sent) rc = 4;
+    }
     if (g_bench) {
         uint32_t peer = bench_find_peer(L.n.lease.ip, L.n.lease.mask);
         if (!peer) fprintf(E, "bench: no local interface on the lease subnet\n"); else bench_report(&L, peer);
@@ -328,6 +340,7 @@ int main(int argc, char **argv)
         else if (OPT("--down")) g_bench_down = argv[++i];
         else if (OPT("--bw")) g_maxbw = atoi(argv[++i]);
         else if (!strcmp(a, "--vht")) g_vht = 1;
+        else if (!strcmp(a, "--ping6")) g_ping6 = 1;
         else if (OPT("--rate")) g_rate = atoi(argv[++i]);
         else if (!strcmp(a, "--legacy-rates")) g_legacy = 1;
         else if (!strcmp(a, "--hidden")) hidden = 1;

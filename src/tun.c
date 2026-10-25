@@ -59,7 +59,7 @@ int tun_read(int fd, uint8_t *buf, size_t cap)
     if (r < 0) return -1;
     if (r < 4) return 0;
     uint32_t af = (uint32_t)hdr[0] << 24 | hdr[1] << 16 | hdr[2] << 8 | hdr[3];
-    if (af != 2 /* AF_INET */) return 0;
+    if (af != 2 /* AF_INET */ && af != 30 /* AF_INET6 */) return 0;
     return (int)(r - 4);
 }
 
@@ -93,6 +93,15 @@ static int valid_if(const char *s)
     if (!s || strncmp(s, "utun", 4) || !s[4] || strlen(s) > 15) return 0;
     for (const char *c = s + 4; *c; c++) if (*c < '0' || *c > '9') return 0;
     return 1;
+}
+
+int tun_set_inet6(const char *ifname, const char *addr, int prefixlen)
+{
+    struct in6_addr a; char pl[8];
+    if (!valid_if(ifname) || !addr || inet_pton(AF_INET6, addr, &a) != 1 || prefixlen < 1 || prefixlen > 128) { errno = EINVAL; return -1; }
+    snprintf(pl, sizeof pl, "%d", prefixlen);
+    char *ifc[] = { "ifconfig", (char *)ifname, "inet6", (char *)addr, "prefixlen", pl, "alias", NULL };
+    return run("/sbin/ifconfig", ifc);
 }
 
 int tun_add_host_route(const char *ifname, const char *ip)

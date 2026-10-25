@@ -14,6 +14,7 @@
 #include "phy.h"
 #include "scanparse.h"
 #include "tun.h"
+#include "tx.h"
 #include "tkip.h"
 #include "wep.h"
 
@@ -118,6 +119,14 @@ static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
 }
 
 // ---- data RX ----
+// One decrypted data payload (LLC/SNAP + ...): IPv6 goes to the v6 stack, everything else to the IPv4 one.
+static void rx_payload(link_t *l, const uint8_t *p, size_t len)
+{
+    uint16_t et; const uint8_t *pl; size_t pn;
+    if (net_llc_parse(p, len, &et, &pl, &pn) == 0 && et == NET_ETH_IP6) { l->st_v6_rx++; n6_rx(&l->n6, pl, pn, now_ms(), &l->ops6); return; }
+    net_rx(&l->n, p, len, now_ms(), &l->ops);
+}
+
 static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
 {
     link_t *l = ud;
@@ -132,7 +141,7 @@ static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
         if (l->pw_cipher == LINK_CIPHER_NONE && l->grp_cipher == LINK_CIPHER_NONE) {      // open network: plain data
             if (group && !memcmp(a3, l->s.mac, 6)) return;
             l->st_dec_ok++;
-            net_rx(&l->n, d + hl, len - hl, now_ms(), &l->ops);
+            rx_payload(l, d + hl, len - hl);
             return;
         }
         l->st_clear_drop++;
@@ -146,7 +155,7 @@ static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
         int pl = wep_decrypt(l->s.wep_key, l->s.wep_key_len, d + hl, len - hl, plain, &kid);
         if (pl < 0) { l->st_dec_fail++; if (l->st_dec_fail <= 8) LOG("wep decrypt FAIL fc=%02x%02x len=%d rc=%d", d[0], d[1], len, pl); return; }
         l->st_dec_ok++;
-        net_rx(&l->n, plain, pl, now_ms(), &l->ops);
+        rx_payload(l, plain, pl);
         return;
     }
     const uint8_t *key; int kid = (d[hl + 3] >> 6) & 3;
@@ -181,7 +190,7 @@ static void on_data(void *ud, const uint8_t *d, int len, const rtl_frame_t *f)
     if (pn <= *lastpn) { l->st_replay++; LOG("replay reject pn=%llu last=%llu", (unsigned long long)pn, (unsigned long long)*lastpn); return; }
     *lastpn = pn;
     l->st_dec_ok++;
-    net_rx(&l->n, plain, pl, now_ms(), &l->ops);
+    rx_payload(l, plain, pl);
 }
 
 // ---- data TX ----
@@ -234,6 +243,20 @@ static void ops_tx(void *ctx, const uint8_t dst[6], const uint8_t *payload, size
     if (rc) LOG("data tx rc=%d", rc);
 }
 
+static void ops6_tx(void *ctx, const uint8_t dst[6], const uint8_t *ip6, size_t len)
+{
+    uint8_t buf[1600];
+    if (len > sizeof buf - 8) return;
+    size_t h = net_llc_build(buf, sizeof buf, NET_ETH_IP6, ip6, len);
+    if (h) ops_tx(ctx, dst, buf, h);
+}
+
+static void ops6_to_tun(void *ctx, const uint8_t *p, size_t len)
+{
+    link_t *l = ctx;
+    if (l->tun_fd >= 0) { if (tun_write(l->tun_fd, p, len) == 0) l->st_tun_rx++; else l->st_tun_drop++; }
+}
+
 static void ops_to_tun(void *ctx, const uint8_t *p, size_t len)
 {
     link_t *l = ctx;
@@ -278,6 +301,7 @@ int link_pump(link_t *l, int ms)
         if (l->stop && *l->stop) return -1;
         if (l->handshake_done) {
             net_tick(&l->n, now_ms(), &l->ops);
+            n6_tick(&l->n6, now_ms(), &l->ops6);
             if (now_ms() >= l->t_next_null) { l->t_next_null = now_ms() + 15000; int rc = sta_send_null(&l->s); LOG("keepalive null rc=%d", rc); }
         }
     } while (now_ms() < end);
@@ -322,6 +346,36 @@ int link_ping(link_t *l, uint32_t target, int count, link_ping_t *res)
         send_ping(l, seq); res->sent++;
         if (wait_echo(l, seq, 1000) == 0) { res->recv++; sum += l->ping_rtt[seq]; }
         else if (l->s.deauth_seen) break;
+        if (link_pump(l, 200) < 0) break;
+    }
+    res->avg_rtt_ms = res->recv ? sum / res->recv : -1;
+    return 0;
+}
+
+// IPv6 ping over the userspace stack. dst NULL = the router (its link-local address, learned from a Router Advertisement,
+// waited for up to 6 s). Same return codes as link_ping.
+int link_ping6(link_t *l, const uint8_t *dst, int count, link_ping_t *res)
+{
+    uint8_t d[16];
+    memset(res, 0, sizeof *res);
+    if (count < 1 || count > LINK_PING_MAX) count = 6;
+    if (dst) memcpy(d, dst, 16);
+    else {
+        long end = now_ms() + 6000;
+        while (!l->n6.has_router && now_ms() < end) if (link_pump(l, 50) < 0) return -1;
+        if (!l->n6.has_router) return 1;
+        memcpy(d, l->n6.router, 16);
+    }
+    long sum = 0;
+    for (int seq = 0; seq < count; seq++) {
+        n6_ping(&l->n6, d, 0x6a77, (uint16_t)seq, now_ms(), &l->ops6);
+        res->sent++;
+        long end = now_ms() + (seq == 0 ? 3000 : 1000);
+        while (!l->n6.ping_got && now_ms() < end) if (link_pump(l, 20) < 0) return -1;
+        if (l->n6.ping_got) {
+            res->recv++; sum += l->n6.ping_rtt_ms;
+            if (res->recv == 1) res->first_rtt_ms = l->n6.ping_rtt_ms;
+        } else if (seq == 0) return 1;
         if (link_pump(l, 200) < 0) break;
     }
     res->avg_rtt_ms = res->recv ? sum / res->recv : -1;
@@ -486,6 +540,8 @@ static int join_once(link_t *l)
                     l->pw_cipher == LINK_CIPHER_TKIP, l->sec == LINK_SEC_WPA);
     }
     net_init(&l->n, s->mac);
+    n6_init(&l->n6, s->mac);
+    l->ops6 = (n6_ops_t){ .ctx = l, .tx = ops6_tx, .to_tun = ops6_to_tun };
     caps_parse(s->ies, s->ies_len, &l->ap_caps);
     caps_plan(&l->ap_caps, s->channel, l->cfg.max_bw >= 80 ? 2 : l->cfg.max_bw >= 40 ? 1 : l->cfg.max_bw == 20 ? 0 : 2, l->cfg.legacy, l->cfg.vht, &l->plan);
     s->want_ht = l->plan.mode != MODE_LEGACY; s->want_bw40 = l->plan.bw >= 1; s->want_vht = l->plan.mode == MODE_VHT;

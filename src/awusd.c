@@ -79,7 +79,7 @@ static struct {
     scan_t scan; int have_scan; long scan_at;
     led_t led; int led_force;                        // -1 = automatic, 0 / 1 = held by `debug led`
     // tun (root only)
-    int tun_fd; char tun_name[16], tun_ip[20], tun_gw[20], tun_mask[20]; int tun_default; int dns_applied; int legacy_rates;
+    int tun_fd; char tun_name[16], tun_ip[20], tun_gw[20], tun_mask[20]; int tun_default; int dns_applied; int legacy_rates; int tun6_ll; uint8_t tun6_gua[16]; char dns_sig[DNS_MAX_SERVERS * 46 + 1];
     // counters
     long t_start; unsigned long connects, reconnects, drops, wakes, replugs, scans, joins_failed;
     int had_dev;
@@ -154,6 +154,7 @@ static int dns_servers(char buf[][46], int cap)
     net_lease_t *ls = &D.L.n.lease;
     int n = 0;
     for (int i = 0; i < ls->ndns && n < cap; i++) if (ls->dns[i]) link_ipstr(buf[n++], 46, ls->dns[i]);
+    for (int i = 0; i < D.L.n6.ndns && n < cap; i++) inet_ntop(AF_INET6, D.L.n6.dns[i], buf[n++], 46);      // RDNSS from the router advertisement
     return n;
 }
 
@@ -169,9 +170,36 @@ static void dns_sync(void)
     else LOGF("dns apply failed");
 }
 
+// IPv6 on the utun: our link-local address and the SLAAC address, set once each (a lease change keeps the utun, so keep the flags).
+static void tun6_sync(void)
+{
+    char a[46];
+    if (D.tun_fd < 0) return;
+    if (!D.tun6_ll) {
+        inet_ntop(AF_INET6, D.L.n6.ll, a, sizeof a);
+        if (tun_set_inet6(D.tun_name, a, 64) == 0) { D.tun6_ll = 1; LOGF("tun %s inet6 %s", D.tun_name, a); } else LOGF("tun inet6 link-local failed");
+    }
+    if (D.L.n6.has_gua && memcmp(D.tun6_gua, D.L.n6.gua, 16)) {
+        inet_ntop(AF_INET6, D.L.n6.gua, a, sizeof a);
+        if (tun_set_inet6(D.tun_name, a, D.L.n6.prefix_len) == 0) { memcpy(D.tun6_gua, D.L.n6.gua, 16); LOGF("tun %s inet6 %s/%d", D.tun_name, a, D.L.n6.prefix_len); }
+        else LOGF("tun inet6 address failed");
+    }
+}
+
+static void dns_sync(void);
+// Re-apply DNS when the set of servers changed (an RDNSS option arrived after the lease).
+static void dns_watch(void)
+{
+    char sv[DNS_MAX_SERVERS][46], sig[DNS_MAX_SERVERS * 46 + 1] = "";
+    int n = dns_servers(sv, DNS_MAX_SERVERS);
+    for (int i = 0; i < n; i++) { strcat(sig, sv[i]); strcat(sig, ","); }
+    if (D.tun_fd >= 0 && strcmp(sig, D.dns_sig)) { snprintf(D.dns_sig, sizeof D.dns_sig, "%s", sig); dns_sync(); }
+}
+
 static void tun_close(void)
 {
     if (D.tun_fd < 0) return;
+    D.tun6_ll = 0; memset(D.tun6_gua, 0, 16); D.dns_sig[0] = 0;
     if (D.tun_default) tun_del_default_split(D.tun_name);
     if (D.dns_applied) { dns_remove(D.tun_name); D.dns_applied = 0; }
     close(D.tun_fd);                              // closing the utun removes its routes
@@ -204,6 +232,7 @@ static int tun_sync(void)
     } else if (!D.cur.default_route && D.tun_default) { tun_del_default_split(D.tun_name); D.tun_default = 0; }
     D.L.tun_fd = D.tun_fd;
     dns_sync();
+    tun6_sync();
     return 0;
 }
 
@@ -492,6 +521,10 @@ static void cmd_status(FILE *o)
             kv(o, "dns", "%s", list);
             kv(o, "search_domain", "%s", D.L.n.lease.domain);
             kv(o, "dns_applied", "%d", D.dns_applied);
+            char a6[46];
+            inet_ntop(AF_INET6, D.L.n6.ll, a6, sizeof a6); kv(o, "ip6_link_local", "%s", a6);
+            if (D.L.n6.has_gua) { inet_ntop(AF_INET6, D.L.n6.gua, a6, sizeof a6); kv(o, "ip6", "%s", a6); kv(o, "ip6_prefix_len", "%d", D.L.n6.prefix_len); }
+            if (D.L.n6.has_router) { inet_ntop(AF_INET6, D.L.n6.router, a6, sizeof a6); kv(o, "ip6_router", "%s", a6); }
         }
         kv(o, "lease_s", "%u", D.L.n.lease.lease_s);
         kv(o, "lease_age_s", "%ld", (long)(((uint64_t)now - D.L.n.t_bound) / 1000));
@@ -987,6 +1020,7 @@ static void tun_pump(void)
         int n = tun_read(D.tun_fd, pkt, sizeof pkt);
         if (n < 0) break;
         if (n == 0) continue;
+        if ((pkt[0] >> 4) == 6) { if (n6_tx_ip(&D.L.n6, pkt, n, now_ms(), &D.L.ops6) == 0) D.L.st_tun_tx++; else D.L.st_tun_drop++; continue; }
         if (net_tx_ip(&D.L.n, pkt, n, now_ms(), &D.L.ops) == 0) D.L.st_tun_tx++; else D.L.st_tun_drop++;
     }
 }
@@ -1011,6 +1045,7 @@ static void connected_tick(void)
         char ip[20]; link_ipstr(ip, sizeof ip, D.L.n.lease.ip);
         if (strcmp(ip, D.tun_ip)) tun_sync();
     }
+    if (D.tun_fd >= 0) { tun6_sync(); dns_watch(); }
 }
 
 static int visible_cb(void *ctx, const profile_t *p)

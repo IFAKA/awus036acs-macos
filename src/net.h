@@ -16,6 +16,7 @@
 #define NET_LLC_LEN    8
 #define NET_ETH_IP     0x0800
 #define NET_ETH_ARP    0x0806
+#define NET_ETH_IP6    0x86DD
 #define NET_ARP_LEN    28
 #define NET_ARP_SLOTS  8
 #define NET_TXQ_SLOTS  4

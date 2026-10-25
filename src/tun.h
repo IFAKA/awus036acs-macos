@@ -14,6 +14,7 @@
 int tun_open(char ifname[16]);
 /* Read one IPv4 packet (4-byte utun header stripped). Returns length, 0 if a
  * non-IPv4 packet was dropped, -1 on error (errno EAGAIN when nothing to read). */
+/* Reads one packet (IPv4 or IPv6, 4-byte family header removed). 0 = nothing / other family, -1 = error or EAGAIN. */
 int tun_read(int fd, uint8_t *buf, size_t cap);
 /* Write one IPv4 packet (header added). Returns 0 or -1. */
 int tun_write(int fd, const uint8_t *ip_pkt, size_t len);
@@ -23,6 +24,8 @@ int tun_write(int fd, const uint8_t *ip_pkt, size_t len);
 int tun_configure(const char *ifname, const char *ip, const char *gw, const char *mask);
 /* Needs root. route -n add -host <ip> -interface <ifname>. 0 ok, -1 error.
  * Refuses 0.0.0.0, "default" and anything that is not a dotted quad. */
+/* Add an IPv6 address (text form) with the given prefix length to the utun (ifconfig inet6 alias). 0 ok, -1 error. */
+int tun_set_inet6(const char *ifname, const char *addr, int prefixlen);
 int tun_add_host_route(const char *ifname, const char *ip);
 /* Needs root. Send all traffic through the interface as two /1 routes (0.0.0.0/1 and 128.0.0.0/1: more specific than the
  * default route, which stays untouched). tun_del_default_split removes them. 0 ok, -1 error. */
