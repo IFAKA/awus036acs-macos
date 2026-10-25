@@ -38,6 +38,7 @@
 #include "profile.h"
 #include "proto.h"
 #include "led.h"
+#include "dns.h"
 
 #define now_ms link_now_ms
 #define LOSS_SILENCE_MS 6000      // nothing heard from the AP for this long = link lost
@@ -78,7 +79,7 @@ static struct {
     scan_t scan; int have_scan; long scan_at;
     led_t led; int led_force;                        // -1 = automatic, 0 / 1 = held by `debug led`
     // tun (root only)
-    int tun_fd; char tun_name[16], tun_ip[20], tun_gw[20], tun_mask[20]; int tun_default;
+    int tun_fd; char tun_name[16], tun_ip[20], tun_gw[20], tun_mask[20]; int tun_default; int dns_applied; int legacy_rates;
     // counters
     long t_start; unsigned long connects, reconnects, drops, wakes, replugs, scans, joins_failed;
     int had_dev;
@@ -147,10 +148,32 @@ static void conf_load(void)
 // ---------------------------------------------------------------- tun (root only)
 static int is_root(void) { return geteuid() == 0; }
 
+// DNS servers from the lease (IPv4) as strings; returns how many.
+static int dns_servers(char buf[][46], int cap)
+{
+    net_lease_t *ls = &D.L.n.lease;
+    int n = 0;
+    for (int i = 0; i < ls->ndns && n < cap; i++) if (ls->dns[i]) link_ipstr(buf[n++], 46, ls->dns[i]);
+    return n;
+}
+
+// Apply the lease's DNS servers and search domain to the utun service (scutil dictionary scoped to the utun), or remove it.
+static void dns_sync(void)
+{
+    char sv[DNS_MAX_SERVERS][46]; const char *pv[DNS_MAX_SERVERS];
+    int n = dns_servers(sv, DNS_MAX_SERVERS);
+    for (int i = 0; i < n; i++) pv[i] = sv[i];
+    const char *dom = D.L.n.lease.domain;
+    if (n == 0 || D.tun_fd < 0) return;
+    if (dns_apply(D.tun_name, pv, n, dom) == 0) { D.dns_applied = 1; LOGF("dns %s applied to %s (%d servers, search '%s')", sv[0], D.tun_name, n, dom); }
+    else LOGF("dns apply failed");
+}
+
 static void tun_close(void)
 {
     if (D.tun_fd < 0) return;
     if (D.tun_default) tun_del_default_split(D.tun_name);
+    if (D.dns_applied) { dns_remove(D.tun_name); D.dns_applied = 0; }
     close(D.tun_fd);                              // closing the utun removes its routes
     LOGF("tun %s closed", D.tun_name);
     D.tun_fd = -1; D.tun_default = 0; D.tun_name[0] = 0;
@@ -180,6 +203,7 @@ static int tun_sync(void)
         else LOGF("default route add failed");
     } else if (!D.cur.default_route && D.tun_default) { tun_del_default_split(D.tun_name); D.tun_default = 0; }
     D.L.tun_fd = D.tun_fd;
+    dns_sync();
     return 0;
 }
 
@@ -346,7 +370,7 @@ static int do_join(const conn_t *c, char *why, size_t wn)
     link_init(&D.L, &D.r);
     D.L.out = D.logf; D.L.stop = &D.abort_op;
     link_cfg_t cfg = { .ssid = cc.ssid, .bssid = cc.have_bssid ? cc.bssid : NULL, .channel = cc.channel, .hidden = cc.hidden,
-                       .sec = cc.sec, .key = cc.key[0] ? cc.key : NULL };
+                       .sec = cc.sec, .key = cc.key[0] ? cc.key : NULL, .legacy = D.legacy_rates };
     int rc = link_join(&D.r, &cfg, &D.L);
     D.busy = B_NONE;
     if (rc) {
@@ -461,6 +485,14 @@ static void cmd_status(FILE *o)
         kv(o, "rssi_dbm", "%d", D.L.s.rssi_avg);
         kv(o, "rx_rate_code", "%d", D.L.s.rx_rate);
         kv(o, "ip", "%s", ip); kv(o, "gateway", "%s", gw); kv(o, "netmask", "%s", mk);
+        {
+            char sv[DNS_MAX_SERVERS][46], list[DNS_MAX_SERVERS * 47 + 1] = "";
+            int nd = dns_servers(sv, DNS_MAX_SERVERS);
+            for (int i = 0; i < nd; i++) { if (i) strcat(list, ","); strcat(list, sv[i]); }
+            kv(o, "dns", "%s", list);
+            kv(o, "search_domain", "%s", D.L.n.lease.domain);
+            kv(o, "dns_applied", "%d", D.dns_applied);
+        }
         kv(o, "lease_s", "%u", D.L.n.lease.lease_s);
         kv(o, "lease_age_s", "%ld", (long)(((uint64_t)now - D.L.n.t_bound) / 1000));
         kv(o, "dhcp_renews", "%u", D.L.n.renews);
@@ -1064,7 +1096,7 @@ static int open_socket(void)
 
 static void usage(FILE *o)
 {
-    fprintf(o, "usage: awusd [--sock PATH] [--profiles PATH] [--log PATH] [--sock-uid UID] [--no-autojoin]\n"
+    fprintf(o, "usage: awusd [--sock PATH] [--profiles PATH] [--log PATH] [--sock-uid UID] [--no-autojoin] [--legacy-rates]\n"
                "  Runs in the foreground (launchd keeps it alive). Control it with awusctl.\n"
                "  socket: /var/run/awusd.sock as root, else $TMPDIR/awusd.sock (mode 0600)\n"
                "  profiles: /var/db/awusd/profiles.json as root, else ~/Library/Application Support/awusd/profiles.json (mode 0600)\n"
@@ -1082,6 +1114,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--log") && i + 1 < argc) logp = argv[++i];
         else if (!strcmp(argv[i], "--sock-uid") && i + 1 < argc) D.sock_uid = (uid_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-autojoin")) D.autojoin_on = 0;
+        else if (!strcmp(argv[i], "--legacy-rates")) D.legacy_rates = 1;
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) { usage(stdout); return 0; }
         else { fprintf(stderr, "awusd: unknown or incomplete option %s\n", argv[i]); usage(stderr); return 2; }
     }

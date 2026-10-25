@@ -50,6 +50,7 @@ typedef struct {
     uint32_t mask;      int has_mask;     /* option 1 */
     uint32_t router;    int has_router;   /* option 3 (first) */
     uint32_t dns[4];    int ndns;         /* option 6 */
+    char     domain[64];                /* option 15 (domain name), "" if absent */
     uint32_t lease;     int has_lease;    /* option 51 (seconds) */
     uint32_t server_id; int has_server_id;/* option 54 */
 } net_dhcp_msg_t;
@@ -60,6 +61,7 @@ int net_dhcp_parse(const uint8_t *ip_pkt, size_t len, net_dhcp_msg_t *m);
 /* ---- state ---- */
 typedef struct {
     uint32_t ip, mask, gw, dns[4]; int ndns;
+    char domain[64];
     uint32_t lease_s, server_id;
 } net_lease_t;
 

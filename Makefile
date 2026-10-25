@@ -96,6 +96,12 @@ build/test_rate: src/rate.c src/rate.h src/test_rate.c | build
 test-rate: build/test_rate
 	./build/test_rate
 
+build/test_dns: src/dns.c src/dns.h src/test_dns.c | build
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ src/dns.c src/test_dns.c
+.PHONY: test-dns
+test-dns: build/test_dns
+	./build/test_dns
+
 build/test_bench: src/benchutil.c src/bench.h src/test_bench.c src/net.c src/net.h src/link.h | build
 	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(shell pkg-config --cflags libusb-1.0) -o $@ src/benchutil.c src/net.c src/test_bench.c
 .PHONY: test-bench
@@ -106,7 +112,7 @@ build/test_phy: src/test_phy.c src/phy.c src/mac.c src/tables.c src/rtl.h src/ph
 .PHONY: test-phy
 test-phy: build/test_phy
 	./build/test_phy
-test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate
+test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate test-dns
 
 AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/country.c src/proto.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
 build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
@@ -114,7 +120,7 @@ build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.
 .PHONY: awusctl
 awusctl: build/awusctl
 
-AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
+AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/dns.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/tun.c,$(INJ_SRC))
 AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
 build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)

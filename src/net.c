@@ -158,6 +158,9 @@ int net_dhcp_parse(const uint8_t *p, size_t len, net_dhcp_msg_t *m)
         case 6:  for (size_t k = 0; k + 4 <= l && m->ndns < 4; k += 4)
                      m->dns[m->ndns++] = rd32(v + k);
                  break;
+        case 15: { size_t k = l; while (k && v[k - 1] == 0) k--;            /* some servers NUL-terminate */
+                   if (k > 0 && k < sizeof m->domain) { memcpy(m->domain, v, k); m->domain[k] = 0; } }
+                 break;
         case 51: if (l == 4) { m->lease = rd32(v); m->has_lease = 1; } break;
         case 54: if (l == 4) { m->server_id = rd32(v); m->has_server_id = 1; } break;
         }
@@ -274,7 +277,7 @@ static void dhcp_rx(net_t *n, const uint8_t *ip, size_t len, uint64_t now,
         net_lease_t l; memset(&l, 0, sizeof l);
         l.ip = m.yiaddr; l.mask = m.mask;
         l.gw = m.has_router ? m.router : 0;
-        l.ndns = m.ndns; memcpy(l.dns, m.dns, sizeof l.dns);
+        l.ndns = m.ndns; memcpy(l.dns, m.dns, sizeof l.dns); memcpy(l.domain, m.domain, sizeof l.domain);
         l.lease_s = m.has_lease ? m.lease : 3600;
         l.server_id = m.has_server_id ? m.server_id : n->offer_server;
         int changed = !n->configured || n->lease.ip != l.ip || n->lease.gw != l.gw ||

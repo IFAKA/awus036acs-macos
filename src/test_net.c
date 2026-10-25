@@ -131,6 +131,7 @@ static size_t srv_build(uint8_t *o, const srv_t *s)
         *p++ = 1; *p++ = 4; put32(p, IPA(255,255,255,0)); p += 4;
         *p++ = 3; *p++ = 4; put32(p, GWIP); p += 4;
         *p++ = 6; *p++ = 8; put32(p, GWIP); put32(p + 4, IPA(8,8,8,8)); p += 8;
+        *p++ = 15; *p++ = 9; memcpy(p, "home.lan\0", 9); p += 9;      /* NUL-terminated, as some servers send it */
     }
     if (s->bad_trunc) { *p++ = 15; *p++ = 40; *p++ = 'x'; }  /* claims 40 bytes, ends */
     else *p++ = 255;
@@ -176,6 +177,13 @@ static void bring_up(net_t *n, uint64_t t0)
     srv_send(n, DHCP_ACK, x, OURIP, 3600, t0 + 20);
     xid_of_last = x;
     reset_cap();
+}
+
+static void test_lease_dns(void)
+{
+    net_t n; bring_up(&n, 5000);
+    CHECK(n.lease.ndns == 2 && n.lease.dns[0] == GWIP && n.lease.dns[1] == IPA(8,8,8,8));
+    CHECK(!strcmp(n.lease.domain, "home.lan"));
 }
 
 static void test_llc(void)
@@ -473,7 +481,7 @@ static void test_fuzz(void)
 
 int main(void)
 {
-    test_llc(); test_dhcp(); test_rebind(); test_arp(); test_tx_rx_ip(); test_tun(); test_fuzz();
+    test_llc(); test_dhcp(); test_rebind(); test_arp(); test_tx_rx_ip(); test_tun(); test_lease_dns(); test_fuzz();
     if (fails) { printf("NET TEST FAILED (%d)\n", fails); return 1; }
     printf("NET TEST OK\n");
     return 0;
