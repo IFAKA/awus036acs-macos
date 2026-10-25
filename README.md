@@ -63,10 +63,10 @@ bridges to a `utun` interface instead.
 - [x] Wi-Fi on/off and TX power control (air-verified)
 - [x] RSSI, link speed and status query (`awusctl status`)
 - [x] Country code, 5 GHz channel rules, DFS marking (table is a summary, not legal text)
-- [ ] 40/80 MHz, short GI, aggregation and rate adaptation (throughput not tuned yet)
+- [ ] 40/80 MHz, short GI, aggregation and rate adaptation (HT 40 MHz MCS7 SGI air-verified on 5 GHz: ~49 Mbit/s up, ~39-49 down, 10x the legacy baseline; VHT/80 MHz and A-MPDU/block-ack not built)
 - [ ] LED (register readback only; visual check pending)
 - [ ] Menu-bar app and installer: built, tested against a fake daemon only; not installed or run against hardware
-- [ ] DHCP renew done and air-verified; IPv6 and DNS applied to the interface are not built
+- [ ] DHCP renew/rebind and IPv6 (RA, SLAAC, ping6) air-verified; DNS applied to the interface and root `utun` IPv6 written but untested (needs root)
 - [ ] USB mode-switch ("fake CD") handling: eject logic unit-tested; this unit never shows the CD stage, so it is not confirmed on a real stick
 - [ ] Long-run stability and root `utun` + default-route mode tested
 
