@@ -57,7 +57,7 @@ bridges to a `utun` interface instead.
 - [x] Hidden SSID join (path air-verified; a truly hidden AP is untested)
 - [ ] WPA3-SAE (integrated and covered by a software loopback test only, `make test-link-sae`; never on the air, our router is WPA2-only)
 - [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP
-- [ ] Ad-hoc create/join
+- [ ] Ad-hoc create/join (create + beacon is air-verified on ch 11: a Mac scan sees the IBSS, interval 100, via `awusctl adhoc create`; SSID text not verified, join and the data plane are not built/tested, see docs/ADHOC.md)
 - [ ] WPS push-button and PIN (integrated: `awusctl wps pbc|pin`, covered by software loopback tests only, `make test-link-wps`; never run against a real router)
 - [x] Saved profiles, auto-join, auto-reconnect with backoff (air-verified; real unplug/sleep not yet tested by a human)
 - [x] Wi-Fi on/off and TX power control (air-verified)
@@ -115,8 +115,8 @@ directly when no daemon is running).
 talks to `awusd` over the socket (`/var/run/awusd.sock`; `--sock PATH` or `$AWUS_SOCK` to override). Menu: status line
 with signal bars (0-5 from RSSI), networks sorted by signal (lock = secured, check = current, 2.4G/5G tag), click to
 join (secured ones ask for the password, with "Remember"), Join Other Network..., Saved Networks (join, auto-join,
-remove), Turn Wi-Fi Off/On, Status... (link details, TX power slider, country), About, Quit. WPS and Ad-hoc are
-present but disabled ("not built yet"). Status is polled every 2 s while the menu is closed; the scan refreshes when the
+remove), Turn Wi-Fi Off/On, Status... (link details, TX power slider, country), About, Quit. WPS and Create Ad-hoc Network
+are in the menu (ad-hoc only announces the network for now). Status is polled every 2 s while the menu is closed; the scan refreshes when the
 menu opens. If the daemon is not running the menu shows "Start driver...", which explains the sudo command.
 `"build/AWUS WiFi.app/Contents/MacOS/AWUS WiFi" --dump-menu` prints the menu as text. For development without the
 adapter run `python3 tools/fake_awusd.py` (canned data, never touches USB) and start the app with `--sock`.
