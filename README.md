@@ -59,12 +59,12 @@ bridges to a `utun` interface instead.
 - [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP
 - [ ] Ad-hoc create/join (create + beacon is air-verified on ch 11: a Mac scan sees the IBSS, interval 100, via `awusctl adhoc create`; SSID text not verified, join and the data plane are not built/tested, see docs/ADHOC.md)
 - [ ] WPS push-button and PIN (integrated: `awusctl wps pbc|pin`, covered by software loopback tests only, `make test-link-wps`; never run against a real router)
-- [x] Saved profiles, auto-join, auto-reconnect with backoff (air-verified; real unplug/sleep not yet tested by a human)
+- [x] Saved profiles, auto-join, auto-reconnect with backoff (air-verified, incl. a real unplug/replug and a real sleep/wake, both rejoined by themselves)
 - [x] Wi-Fi on/off and TX power control (air-verified)
 - [x] RSSI, link speed and status query (`awusctl status`)
 - [x] Country code, 5 GHz channel rules, DFS marking (table is a summary, not legal text)
 - [ ] 40/80 MHz, short GI, aggregation and rate adaptation (HT 40 MHz MCS7 SGI air-verified on 5 GHz: ~49 Mbit/s up, ~39-49 down, 10x the legacy baseline; VHT/80 MHz and A-MPDU/block-ack not built)
-- [ ] LED (register readback only; visual check pending)
+- [x] LED: solid when connected, blinks on activity, matches the vendor behaviour (checked by eye); known nit: it blinks instead of going off in RF-off
 - [ ] Menu-bar app and installer: built, tested against a fake daemon only; not installed or run against hardware
 - [ ] DHCP renew/rebind and IPv6 (RA, SLAAC, ping6) air-verified; DNS applied to the interface and root `utun` IPv6 written but untested (needs root)
 - [ ] USB mode-switch ("fake CD") handling: eject logic unit-tested; this unit never shows the CD stage, so it is not confirmed on a real stick
