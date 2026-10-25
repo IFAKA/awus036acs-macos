@@ -5,11 +5,11 @@
 /* eap.h - 802.1X / EAP supplicant (peer) engine for WPA2-Enterprise. Pure functions on byte buffers: no sockets, no
  * USB, no threads, no timers. The link layer feeds it EAP packets and sends back what it returns.
  *
- * Methods: EAP-TLS (client certificate from PKCS#12 or PEM), PEAP v0/v1 with MS-CHAPv2, EAP-TTLS with MS-CHAPv2 or PAP,
+ * Methods: EAP-TLS (client certificate from PEM; PKCS#12 not supported), PEAP v0/v1 with MS-CHAPv2, EAP-TTLS with MS-CHAPv2 or PAP,
  * and LEAP (INSECURE: broken by ASLEAP; off unless cfg.allow_leap). Identity, Notification, Nak and expanded-type
  * framing, TLS fragmentation (L/M/S flags) and retransmitted requests are handled here.
  * Server certificates are validated against cfg.ca_pem by default; insecure_skip_verify turns that off (INSECURE).
- * TLS comes from eap_tlsp.h (OpenSSL, see the licence note there). PEAP crypto-binding TLVs are not verified.
+ * TLS comes from eap_tlsp.h (Mbed TLS, see the licence note there). PEAP crypto-binding TLVs are not verified.
  *
  * Call sequence (what link.c must do):
  *   eap_cfg_t c = {0}; c.identity = "user@example.org"; c.password = "..."; c.ca_pem = ...; (zero it, set what you need)
@@ -63,7 +63,7 @@ typedef struct {
     const uint8_t *ca_pem; size_t ca_pem_len;          /* trust anchors for the server certificate (PEM) */
     const uint8_t *cert_pem; size_t cert_pem_len;      /* EAP-TLS client certificate chain (PEM) ... */
     const uint8_t *key_pem; size_t key_pem_len;        /* ... and private key (PEM; defaults to cert_pem when NULL) */
-    const uint8_t *p12; size_t p12_len;                /* ... or a PKCS#12 bundle (DER) */
+    const uint8_t *p12; size_t p12_len;                /* ... PKCS#12 is NOT supported (eap_new fails; use PEM) */
     const char *key_pass;                              /* passphrase of the key / PKCS#12 */
     const char *server_name;                           /* optional: name the server certificate must match */
     int insecure_skip_verify;                          /* INSECURE: do not validate the server certificate */

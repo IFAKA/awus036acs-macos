@@ -170,6 +170,9 @@ reasoning behind each design decision.
 GPLv2 (see [`LICENSE`](LICENSE)), because this is derived from the GPLv2
 `aircrack-ng/rtl8812au` driver and its firmware/table/power-sequence data.
 
+The 802.1X engine's TLS comes from Mbed TLS (dual Apache-2.0 / GPL-2.0-or-later), used under the
+GPL-2.0-or-later option and linked statically; no OpenSSL is included.
+
 ## Contributing
 
 Pull requests welcome, especially on the parity checklist in

@@ -4,20 +4,23 @@
 // See LICENSE for the full license text.
 /* eap_tlsp.h - the TLS provider behind EAP-TLS / PEAP / TTLS: a TLS engine that works on byte buffers (no sockets).
  *
- * WHY OPENSSL AND NOT SECURETRANSPORT.  EAP needs the TLS master secret (PRF export, RFC 5705) to make the MSK:
+ * WHY MBED TLS AND NOT SECURETRANSPORT.  EAP needs the TLS master secret (PRF export, RFC 5705) to make the MSK:
  *   MSK = TLS-PRF(master_secret, "client EAP encryption" | "ttls keying material", client_random | server_random).
  * Apple's SecureTransport / Network.framework / SecItem APIs have no public master-secret or keying-material export,
- * and SecureTransport is deprecated. So the provider is OpenSSL 3 (SSL_export_keying_material) run on memory BIOs.
- * It is the ONLY file that includes OpenSSL; eap.c talks to it through this header, so mbedTLS (SSL export:
- * mbedtls_ssl_set_export_keys_cb, TLS 1.2 PRF) or BoringSSL can replace eap_tlsp.c without touching the rest.
+ * and SecureTransport is deprecated. So the provider is Mbed TLS 4.x (mbedtls_ssl_export_keying_material) run over
+ * in-memory buffers. eap_tlsp.c is the ONLY file that includes it; eap.c talks to it through this header.
  *
- * LINKING / LICENCE.  Homebrew openssl@3 is Apache-2.0. Apache-2.0 is compatible with GPLv3 but NOT with
- * GPL-2.0-only, which is this repository's licence. So: (1) do not ship a binary that links OpenSSL until that is
- * settled, either by relicensing the combined work to GPL-2.0-or-later/GPLv3 or by swapping this provider for mbedTLS
- * (Apache-2.0 OR GPL-2.0-or-later, compatible) or by using the "system library" route; (2) link it STATICALLY
- * (libssl.a/libcrypto.a, see Makefile test-eap) so the daemon has no runtime dependency on /opt/homebrew.
- * Only TLS 1.0..1.2 is offered: RFC 5705 keys of TLS 1.3 EAP use a different exporter and end-of-handshake rules that
- * are not implemented (hostap also defaults PEAP/TTLS to TLS 1.2 for compatibility). Session tickets are disabled. */
+ * LICENCE.  Mbed TLS is dual-licensed "Apache-2.0 OR GPL-2.0-or-later". This project uses it under the
+ * GPL-2.0-or-later option, which is compatible with this repository's GPL-2.0. No OpenSSL is linked or included in any
+ * shipped source (the tests only call the openssl CLI to make certificates). Link Mbed TLS STATICALLY
+ * (libmbedtls.a libmbedx509.a libtfpsacrypto.a, see Makefile test-eap) so the daemon has no runtime dependency on
+ * /opt/homebrew.
+ *
+ * LIMITS.  Mbed TLS 4.x removed TLS 1.0 and 1.1, so only TLS 1.2 is offered (TLS 1.3 is pinned off: its EAP keying uses a
+ * different exporter and end-of-handshake rules that are not implemented; hostap also defaults PEAP/TTLS to 1.2).
+ * Servers that only speak TLS 1.0/1.1 (old FreeRADIUS/IAS setups) will not work. PKCS#12 identities are NOT supported
+ * (Mbed TLS has no PKCS#12 reader): use PEM; setting p12 makes tlsp_new fail with a message saying so. A CA is required
+ * (no system root store is read; pass the CA PEM). Session tickets are disabled. */
 #ifndef EAP_TLSP_H
 #define EAP_TLSP_H
 #include <stddef.h>
@@ -31,7 +34,7 @@ typedef struct {
     const uint8_t *cert_pem; size_t cert_pem_len;        /* own certificate (+ chain), PEM */
     const uint8_t *key_pem; size_t key_pem_len;          /* private key, PEM */
     const char *key_pass;                                /* passphrase for key_pem or the PKCS#12 file */
-    const uint8_t *p12; size_t p12_len;                  /* alternative to cert_pem/key_pem: a PKCS#12 bundle (DER) */
+    const uint8_t *p12; size_t p12_len;                  /* NOT SUPPORTED: tlsp_new fails with a "convert to PEM" message */
     int insecure_skip_verify;                            /* client: accept any server certificate (INSECURE) */
     const char *server_name;                             /* client: required name in the server certificate, or NULL */
     int require_client_cert;                             /* server: demand and verify a client certificate */

@@ -7,7 +7,7 @@
  *     LEAP key (python hashlib cross-check).
  *  2. framing: Identity / Notification / Nak / expanded type, retransmission, EAPOL wrap, early Success ignored.
  *  3. loopback: a small authenticator written here (test only) talks to the supplicant through real TLS 1.2 (the
- *     same OpenSSL provider, server side) with certificates made at run time by the openssl CLI. For every method
+ *     same Mbed TLS provider, server side) with certificates made at run time by the openssl CLI. For every method
  *     both sides must end with the same MSK. Negative cases: wrong CA, wrong server name, wrong password, a server
  *     that does not know the password, unexpected EAP-Success. */
 #include "eap_i.h"
@@ -579,12 +579,12 @@ static void test_loopback(void) {
     a = a_new(EAP_TYPE_TLS, 0, "alice", "x");
     c = cfg_for(EAP_TYPE_TLS); c.cert_pem = NULL; c.cert_pem_len = 0; c.key_pem = NULL; c.key_pem_len = 0;
     c.p12 = g_p12.p; c.p12_len = g_p12.n; c.key_pass = "p12pass"; r = run(&c, a, 0);
-    EXPECT_OK("EAP-TLS PKCS#12 client cert", r); a_free(a);
+    CHECK(r.final != EAP_ST_SUCCESS && strstr(r.err, "PKCS#12"), "PKCS#12 identity is refused with a clear message [%s]", r.err); a_free(a);
 
     a = a_new(EAP_TYPE_TLS, 0, "alice", "x");
     c = cfg_for(EAP_TYPE_TLS); c.cert_pem = NULL; c.cert_pem_len = 0; c.key_pem = NULL; c.key_pem_len = 0;
     c.p12 = g_p12.p; c.p12_len = g_p12.n; c.key_pass = "wrong"; r = run(&c, a, 0);
-    CHECK(r.final != EAP_ST_SUCCESS, "wrong PKCS#12 passphrase must not authenticate [%s]", r.err); a_free(a);
+    CHECK(r.final != EAP_ST_SUCCESS, "PKCS#12 with a wrong passphrase must not authenticate either [%s]", r.err); a_free(a);
 
     a = a_new(EAP_TYPE_LEAP, 0, "alice", "correct horse");
     c = cfg_for(EAP_TYPE_LEAP); r = run(&c, a, 0);

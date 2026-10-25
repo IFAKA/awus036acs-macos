@@ -181,11 +181,13 @@ test-sae: build/test_sae
 test: test-sae
 
 # ---- 802.1X / EAP supplicant (PEAP, TTLS, TLS, LEAP): crypto vectors + loopback authenticator over real TLS 1.2.
-# TLS is OpenSSL 3 linked STATICALLY (see the licence note in src/eap_tlsp.h). The test makes its certificates with the openssl CLI. ----
+# TLS is Mbed TLS 4.x linked STATICALLY, GPL-2.0-or-later option (see src/eap_tlsp.h). The test makes its certificates with the
+# openssl CLI (only a test tool; nothing from OpenSSL is linked). ----
+MBED ?= /opt/homebrew/opt/mbedtls
 OSSL ?= /opt/homebrew/opt/openssl@3
 EAP_SRC = src/eap.c src/eap_tls.c src/eap_peap.c src/eap_ttls.c src/eap_leap.c src/eap_mschap.c src/eap_tlsp.c
 build/test_eap: $(EAP_SRC) src/eap.h src/eap_i.h src/eap_mschap.h src/eap_tlsp.h src/test_eap.c | build
-	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOPENSSL_BIN='"$(OSSL)/bin/openssl"' -I$(OSSL)/include -o $@ $(EAP_SRC) src/test_eap.c $(OSSL)/lib/libssl.a $(OSSL)/lib/libcrypto.a
+	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOPENSSL_BIN='"$(OSSL)/bin/openssl"' -I$(MBED)/include -o $@ $(EAP_SRC) src/test_eap.c $(MBED)/lib/libmbedtls.a $(MBED)/lib/libmbedx509.a $(MBED)/lib/libtfpsacrypto.a
 .PHONY: test-eap
 test-eap: build/test_eap
 	./build/test_eap
