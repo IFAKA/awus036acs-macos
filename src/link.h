@@ -13,6 +13,8 @@
 #include "rtl.h"
 #include "sta.h"
 #include "wpa.h"
+#include "wpa3.h"
+#include "sae.h"
 #include "net.h"
 #include "net6.h"
 #include "rate.h"
@@ -23,7 +25,8 @@ typedef enum {
     LINK_SEC_WEP,           // WEP 40/104, open-system auth (falls back to shared-key if the AP answers status 13)
     LINK_SEC_WEP_SHARED,    // WEP 40/104, shared-key (challenge) auth
     LINK_SEC_WPA,           // WPA1 (vendor IE), TKIP, PSK
-    LINK_SEC_WPA2           // WPA2 (RSN), CCMP preferred, TKIP if that is all the AP has, PSK
+    LINK_SEC_WPA2,          // WPA2 (RSN), CCMP preferred, TKIP if that is all the AP has, PSK
+    LINK_SEC_SAE            // WPA3-Personal: SAE (group 19, H2E when the AP has it, else hunting-and-pecking), AKM 8, PMF, CCMP
 } link_sec_t;
 
 #define LINK_CIPHER_NONE 0
@@ -42,6 +45,8 @@ typedef struct {
     int legacy;             // 1 = never use HT/VHT or a radio width above 20 MHz (the safe fallback, --legacy-rates)
     int vht;                // 1 = also negotiate VHT (5 GHz); off by default, see PLAN.md (VHT downlink collapses)
     int max_bw;             // width cap in MHz: 0 = as wide as the AP allows (up to 80), else 20 / 40 / 80
+    int prefer_psk;         // AUTO on a WPA2/WPA3 transition AP: 1 = use WPA2-PSK, 0 (default) = prefer SAE (profile key prefer_sae=1)
+    int no_dhcp;            // 1 = stop after the key handshake (no DHCP): WPS / loopback tests
     int hs_rate, data_rate; // TX rates (Mbps*10) for EAPOL and data; 0 = 60 (6 Mbps OFDM)
 } link_cfg_t;
 
@@ -51,6 +56,12 @@ typedef struct link {
     rtl_t *r;
     sta_t s;
     wpa_t w;
+    wpa3_t w3;                      // used instead of w when sec == LINK_SEC_SAE
+    sae_t sae;
+    int sae_done, sae_rc, sae_sent_confirm, sae_h2e, pmf_required;
+    char sae_reason[48];
+    int have_igtk, igtk_id; uint8_t igtk[16]; uint8_t igtk_rx_ipn[6]; uint64_t rx_pn_mgmt;
+    unsigned long st_sa_query;
     net_t n;
     net_ops_t ops;
     link_cfg_t cfg;
@@ -103,6 +114,8 @@ int  link_pump(link_t *l, int ms);
 int  link_ping(link_t *l, uint32_t target, int count, link_ping_t *res);
 // IPv6 ping (16-byte address, or NULL = the router's link-local from its Router Advertisement). Same codes as link_ping.
 int  link_ping6(link_t *l, const uint8_t *dst, int count, link_ping_t *res);
+// The pairwise TK of the current handshake (16 bytes) or NULL: the WPA2 one or the WPA3 one.
+const uint8_t *link_tk(const link_t *l);
 // Politely leave: send a Deauthentication (reason 3, station leaving) to the AP we joined.
 void link_leave(link_t *l);
 // Human text for a security mode / cipher.

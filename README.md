@@ -55,7 +55,7 @@ bridges to a `utun` interface instead.
 - [ ] Join WEP 40/104 (unit vectors only, not on air)
 - [ ] WPA1/TKIP and mixed mode (unit tests only, not on air)
 - [x] Hidden SSID join (path air-verified; a truly hidden AP is untested)
-- [ ] WPA3-SAE
+- [ ] WPA3-SAE (integrated and covered by a software loopback test only, `make test-link-sae`; never on the air, our router is WPA2-only)
 - [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP
 - [ ] Ad-hoc create/join
 - [ ] WPS push-button and PIN

@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include "profile.h"
 
-static const char *const secs[] = { "auto", "open", "wep", "wep-shared", "wpa", "wpa2" };
+static const char *const secs[] = { "auto", "open", "wep", "wep-shared", "wpa", "wpa2", "sae" };
 
 int profile_check(const profile_t *p, const char **why)
 {
@@ -20,9 +20,10 @@ int profile_check(const profile_t *p, const char **why)
     int known = 0;
     for (size_t i = 0; i < sizeof secs / sizeof secs[0]; i++) if (!strcmp(p->security, secs[i])) known = 1;
     if (sl < 1 || sl > 32) w = "ssid must be 1-32 bytes";
-    else if (!known) w = "security must be auto, open, wep, wep-shared, wpa or wpa2";
+    else if (!known) w = "security must be auto, open, wep, wep-shared, wpa, wpa2 or sae";
     else if (!strcmp(p->security, "open") && kl) w = "an open network has no key";
     else if ((!strcmp(p->security, "wpa") || !strcmp(p->security, "wpa2")) && (kl < 8 || kl > 63)) w = "WPA passphrase must be 8-63 characters";
+    else if (!strcmp(p->security, "sae") && (kl < 1 || kl > 63)) w = "SAE password must be 1-63 characters";
     else if ((!strcmp(p->security, "wep") || !strcmp(p->security, "wep-shared")) && kl != 5 && kl != 13 && kl != 10 && kl != 26) w = "WEP key must be 5/13 characters or 10/26 hex digits";
     else if (!strcmp(p->security, "auto") && kl && kl < 5) w = "key too short";
     else if (p->priority < -1000 || p->priority > 1000) w = "priority must be -1000..1000";
@@ -102,6 +103,7 @@ int profiles_to_json(const profiles_t *ps, char *out, size_t cap)
         snprintf(t, sizeof t, ",\"hidden\":%s", p->hidden ? "true" : "false"); wstr(&w, t);
         snprintf(t, sizeof t, ",\"priority\":%d", p->priority); wstr(&w, t);
         snprintf(t, sizeof t, ",\"autojoin\":%s", p->autojoin ? "true" : "false"); wstr(&w, t);
+        snprintf(t, sizeof t, ",\"prefer_sae\":%s", p->prefer_sae ? "true" : "false"); wstr(&w, t);
         snprintf(t, sizeof t, ",\"default_route\":%s}", p->default_route ? "true" : "false"); wstr(&w, t);
     }
     wstr(&w, ps->n ? "\n]}\n" : "]}\n");
@@ -183,6 +185,7 @@ static int rprofile(rd_t *r, profile_t *p)
 {
     memset(p, 0, sizeof *p);
     snprintf(p->security, sizeof p->security, "auto");
+    p->prefer_sae = 1;
     ws(r);
     if (*r->s != '{') return r->err = 1;
     r->s++; ws(r);
@@ -198,6 +201,7 @@ static int rprofile(rd_t *r, profile_t *p)
         else if (!strcmp(k, "key")) { if (rstr(r, p->key, sizeof p->key)) return 1; }
         else if (!strcmp(k, "hidden")) { if (rbool(r, &p->hidden)) return 1; }
         else if (!strcmp(k, "autojoin")) { if (rbool(r, &p->autojoin)) return 1; }
+        else if (!strcmp(k, "prefer_sae")) { if (rbool(r, &p->prefer_sae)) return 1; }
         else if (!strcmp(k, "default_route")) { if (rbool(r, &p->default_route)) return 1; }
         else if (!strcmp(k, "priority")) {
             ws(r);

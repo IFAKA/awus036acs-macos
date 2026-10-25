@@ -17,11 +17,12 @@
 
 typedef struct {
     char ssid[33];
-    char security[PROFILE_SEC_LEN];   // "auto", "open", "wep", "wep-shared", "wpa", "wpa2"
+    char security[PROFILE_SEC_LEN];   // "auto", "open", "wep", "wep-shared", "wpa", "wpa2", "sae"
     char key[130];                    // WPA passphrase (8-63) or WEP key; empty for open
     int hidden;
     int priority;                     // higher = preferred by auto-join
     int autojoin;
+    int prefer_sae;                   // WPA2/WPA3 transition AP: 1 (default) = join with SAE, 0 = WPA2-PSK
     int default_route;                // route all traffic through the utun (root mode only); default 0
 } profile_t;
 

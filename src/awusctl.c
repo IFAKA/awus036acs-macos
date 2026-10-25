@@ -192,7 +192,7 @@ static int cmd_scan_direct(const char *band_s, int dwell, int passes, int json, 
 static volatile sig_atomic_t stop_req;
 static void on_sig(int s) { (void)s; stop_req = 1; }
 
-static int g_bench, g_bench_secs = 5, g_legacy, g_maxbw, g_rate, g_vht, g_ping6;
+static int g_bench, g_bench_secs = 5, g_legacy, g_maxbw, g_rate, g_vht, g_ping6, g_prefer_psk;
 static const char *g_bench_down = "10,20,40,80";
 
 static void bench_report(link_t *L, uint32_t peer)
@@ -223,11 +223,11 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
     if (sec_s) {
         if (!strcmp(sec_s, "auto")) sec = LINK_SEC_AUTO; else if (!strcmp(sec_s, "open")) sec = LINK_SEC_OPEN;
         else if (!strcmp(sec_s, "wep")) sec = LINK_SEC_WEP; else if (!strcmp(sec_s, "wep-shared")) sec = LINK_SEC_WEP_SHARED;
-        else if (!strcmp(sec_s, "wpa")) sec = LINK_SEC_WPA; else if (!strcmp(sec_s, "wpa2")) sec = LINK_SEC_WPA2;
-        else { fprintf(E, "awusctl join: --sec must be auto, open, wep, wep-shared, wpa or wpa2\n"); return 2; }
+        else if (!strcmp(sec_s, "wpa")) sec = LINK_SEC_WPA; else if (!strcmp(sec_s, "wpa2")) sec = LINK_SEC_WPA2; else if (!strcmp(sec_s, "sae")) sec = LINK_SEC_SAE;
+        else { fprintf(E, "awusctl join: --sec must be auto, open, wep, wep-shared, wpa, wpa2 or sae\n"); return 2; }
     }
     const char *key = key_env ? getenv(key_env) : NULL;
-    if ((sec == LINK_SEC_WPA || sec == LINK_SEC_WPA2 || sec == LINK_SEC_WEP || sec == LINK_SEC_WEP_SHARED) && !key) {
+    if ((sec == LINK_SEC_WPA || sec == LINK_SEC_WPA2 || sec == LINK_SEC_SAE || sec == LINK_SEC_WEP || sec == LINK_SEC_WEP_SHARED) && !key) {
         fprintf(E, "awusctl join: --sec %s needs --key-env VAR\n", link_sec_str(sec)); return 2;
     }
     if (sec == LINK_SEC_OPEN) key = NULL;
@@ -247,7 +247,7 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
     static link_t L;
     link_init(&L, &r);
     L.out = E; L.stop = &stop_req;
-    link_cfg_t cfg = { .ssid = ssid, .bssid = have_b ? bssid : NULL, .channel = ch, .hidden = hidden, .sec = sec, .key = key, .wep_keyid = keyid, .legacy = g_legacy, .max_bw = g_maxbw, .data_rate = g_rate, .vht = g_vht };
+    link_cfg_t cfg = { .ssid = ssid, .bssid = have_b ? bssid : NULL, .channel = ch, .hidden = hidden, .sec = sec, .key = key, .wep_keyid = keyid, .legacy = g_legacy, .max_bw = g_maxbw, .data_rate = g_rate, .vht = g_vht, .prefer_psk = g_prefer_psk };
     int rc = 1;
     if (link_join(&r, &cfg, &L)) { fprintf(E, "join FAIL %s %s\n", L.fail_step, L.fail_reason); goto out; }
     char ips[20], gws[20];
@@ -287,7 +287,7 @@ static int usage(FILE *o)
 "usage: awusctl COMMAND [options]       (talks to the awusd daemon; scan and join also work without it)\n"
 "  status                         state, link, lease, LED, counters\n"
 "  scan [--band 2|5|all] [--dwell MS] [--passes N] [--json] [--country CC (direct mode)]\n"
-"  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|auto] [--key-env VAR]\n"
+"  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|sae|auto] [--prefer-psk] [--key-env VAR]\n"
 "       [--wep-keyid N] [--default-route]     with the daemon: connect and stay; without: join, ping 6x, leave\n"
 "  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates] [--bw 20|40|80]   goodput test (no daemon)\n"
 "  leave                          disconnect and stop auto-join until join / autojoin on / profile add\n"
@@ -295,7 +295,7 @@ static int usage(FILE *o)
 "  rf on|off                      radio on/off (off: deauth, RF block disabled, LED off)\n"
 "  txpower get | txpower set 0-63\n"
 "  country get | country set CC   (%s)\n"
-"  profile add --ssid S [--key-env VAR] [--security auto|open|wep|wpa|wpa2] [--hidden] [--priority N]\n"
+"  profile add --ssid S [--key-env VAR] [--security auto|open|wep|wpa|wpa2|sae] [--prefer-psk] [--hidden] [--priority N]\n"
 "                [--no-autojoin] [--default-route] | profile list | profile remove --ssid S\n"
 "  autojoin on|off|get\n"
 "  debug drop | unplug [MS] | wake | failnext N | renew | rebind | led on|off|auto     (test hooks)\n"
@@ -343,6 +343,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--ping6")) g_ping6 = 1;
         else if (OPT("--rate")) g_rate = atoi(argv[++i]);
         else if (!strcmp(a, "--legacy-rates")) g_legacy = 1;
+        else if (!strcmp(a, "--prefer-psk")) g_prefer_psk = 1;
         else if (!strcmp(a, "--hidden")) hidden = 1;
         else if (!strcmp(a, "--json")) json = 1;
         else if (!strcmp(a, "--no-autojoin")) noauto = 1;
@@ -381,6 +382,7 @@ int main(int argc, char **argv)
         if (ch) { snprintf(t, sizeof t, "%d", ch); rq_kv(&q, "ch", t); }
         if (hidden) rq_kv(&q, "hidden", "1");
         if (defroute) rq_kv(&q, "default_route", "1");
+        if (g_prefer_psk) rq_kv(&q, "prefer_sae", "0");
         char *resp; const char *body;
         int rc = call(&q, &resp, &body);
         if (rc != 3) {
@@ -411,6 +413,7 @@ int main(int argc, char **argv)
         if (have_prio) { char t[16]; snprintf(t, sizeof t, "%d", prio); rq_kv(&q, "priority", t); }
         if (noauto) rq_kv(&q, "autojoin", "0");
         if (defroute) rq_kv(&q, "default_route", "1");
+        if (g_prefer_psk) rq_kv(&q, "prefer_sae", "0");
         return simple_cmd(&q);
     }
     if (!strcmp(cmd, "ping")) {

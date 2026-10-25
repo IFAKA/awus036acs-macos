@@ -50,7 +50,30 @@ typedef struct {
     uint8_t last_hdr_dummy;
     void (*def_cb)(void *ud, const uint8_t *frame, int len, const rtl_frame_t *f);   // used by sta_poll when cb == NULL
     void *def_ud;
+    // WPA3: Authentication frames with algorithm 3 (SAE) are handed over whole (body starts at the algorithm field)
+    void (*auth_cb)(void *ud, const uint8_t *body, int len);
+    void *auth_ud;
+    // Protected management frames (802.11w). Once pmf_active is set, Deauth / Disassoc / Action frames from the AP go through
+    // pmf_cb: for Deauth / Disassoc it returns the reason code (frame genuine) or -1 (drop it, counted in pmf_dropped); for
+    // Action frames it handles the frame itself (SA Query) and the return value is ignored.
+    int pmf_active; unsigned long pmf_dropped;
+    int (*pmf_cb)(void *ud, const uint8_t *frame, int len);
+    void *pmf_ud;
 } sta_t;
+
+// Optional I/O override (software-only tests: a fake AP in the same process). NULL = the real adapter. When set, sta never
+// touches the radio: tx gets the frame without FCS, poll must deliver frames WITH a (dummy) 4-byte FCS and has_fcs = 1.
+typedef struct {
+    int (*tx)(void *ud, const uint8_t *frame, int len, int is_data);
+    int (*poll)(void *ud, rtl_frame_cb cb, void *cbud, int timeout_ms);
+    void *ud;
+} sta_io_t;
+extern const sta_io_t *sta_io;
+
+// Send an Authentication frame (to the AP, sequence/algorithm are inside body). 0 ok, 2 TX failure, 3 DFS gate.
+int  sta_send_auth_body(sta_t *s, const uint8_t *body, int blen);
+// Send a complete management frame (header included, e.g. a protected Deauth / SA Query response). Same codes.
+int  sta_send_mgmt_raw(sta_t *s, const uint8_t *frame, int len);
 
 // frame (FCS stripped) is a data frame for us: from-DS from our BSSID, addr1 == our MAC or group. hdr intact.
 typedef void (*sta_data_cb)(void *ud, const uint8_t *frame, int len, const rtl_frame_t *f);

@@ -88,6 +88,15 @@ static void t_profile(void)
     CHECK(profiles_find(&back, n.ssid) && profiles_find(&back, n.ssid)->hidden == 1 && profiles_find(&back, n.ssid)->priority == -7 && profiles_find(&back, n.ssid)->default_route == 1);
     CHECK(profiles_to_json(&ps, js, 20) == -1);
     // garbage and tolerance
+    {   // sae profile: key 1-63 chars, prefer_sae defaults to 1 when the file has no such key, round-trips when 0
+        profile_t sp = mk("saenet", "sae", "pw", 0, 1); const char *why;
+        CHECK(profile_check(&sp, &why) == 0);
+        profiles_t one = {0}, two = {0}; char j2[2048];
+        sp.prefer_sae = 0; CHECK(profiles_put(&one, &sp, &why) == 0);
+        CHECK(profiles_to_json(&one, j2, sizeof j2) > 0 && profiles_from_json(j2, &two, NULL) == 0 && two.n == 1 && two.p[0].prefer_sae == 0 && !strcmp(two.p[0].security, "sae"));
+        CHECK(profiles_from_json("{\"profiles\":[{\"ssid\":\"a\",\"security\":\"sae\",\"key\":\"pw\"}]}", &two, NULL) == 0 && two.n == 1 && two.p[0].prefer_sae == 1);
+        sp.key[0] = 0; CHECK(profile_check(&sp, &why) != 0);
+    }
     CHECK(profiles_from_json("", &back, NULL) == -1 && profiles_from_json("{\"profiles\":[{\"ssid\":}]}", &back, NULL) == -1 && profiles_from_json("[]", &back, NULL) == -1);
     CHECK(profiles_from_json("{\"profiles\":[{\"ssid\":\"a\",\"security\":\"open\",\"extra\":{\"x\":[1,2,\"]\"]},\"future\":1.5e3}],\"other\":null}", &back, &skipped) == 0 && back.n == 1 && skipped == 0);
     CHECK(profiles_from_json("{\"profiles\":[{\"ssid\":\"a\",\"security\":\"wpa2\",\"key\":\"short\"},{\"ssid\":\"b\",\"security\":\"open\"}]}", &back, &skipped) == 0 && back.n == 1 && skipped == 1);

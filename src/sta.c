@@ -14,6 +14,18 @@
 
 static long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000L + t.tv_nsec / 1000000L; }
 
+const sta_io_t *sta_io;
+
+static int io_tx_mgmt(const uint8_t *fr, int n, int rate, int retries, sta_t *s)
+{
+    return sta_io ? (sta_io->tx(sta_io->ud, fr, n, 0) ? 2 : 0) : (rtl_tx_frame(s->r, fr, n, rate, retries) ? 2 : 0);
+}
+
+static int io_tx_data(sta_t *s, const uint8_t *fr, int n, int rate)
+{
+    return sta_io ? sta_io->tx(sta_io->ud, fr, n, 1) : rtl_tx_data(s->r, fr, n, rate, 7);
+}
+
 void sta_init(sta_t *s, rtl_t *r, const char *ssid, const uint8_t *bssid, int channel)
 {
     memset(s, 0, sizeof *s);
@@ -26,7 +38,7 @@ void sta_init(sta_t *s, rtl_t *r, const char *ssid, const uint8_t *bssid, int ch
     s->last_status = -1;
     s->mac[0] = 0x02;
     for (int i = 1; i < 6; i++) s->mac[i] = rand() & 0xFF;
-    rtl_set_sta_addr(r, s->mac, s->have_bssid ? s->bssid : NULL);
+    if (!sta_io) rtl_set_sta_addr(r, s->mac, s->have_bssid ? s->bssid : NULL);
 }
 
 static void put_hdr(uint8_t *f, uint8_t fc0, const uint8_t *a1, const uint8_t *a2, const uint8_t *a3)
@@ -40,7 +52,7 @@ int sta_is_dfs(int ch) { return ch >= 52 && ch <= 144; }
 
 int sta_set_channel(sta_t *s, int ch)
 {
-    int rc = rtl_set_channel(s->r, ch, 1);
+    int rc = sta_io ? 0 : rtl_set_channel(s->r, ch, 1);
     if (rc) return rc;
     s->channel = ch;
     s->rate = ch > 14 ? 60 : 10;            // management rate: 6 Mbps OFDM on 5 GHz (CCK does not exist there), 1 Mbps CCK on 2.4 GHz
@@ -99,7 +111,7 @@ static void on_frame(void *ud, const rtl_frame_t *f)
                 else if (sub == 5 && !tome && !s->have_bssid) match = 0;
             }
             if (!match) return;
-            if (!s->have_bssid) { memcpy(s->bssid, a2, 6); s->have_bssid = 1; rtl_set_sta_addr(s->r, s->mac, s->bssid); }
+            if (!s->have_bssid) { memcpy(s->bssid, a2, 6); s->have_bssid = 1; if (!sta_io) rtl_set_sta_addr(s->r, s->mac, s->bssid); }
             s->ap_cap = d[34] | d[35] << 8;
             s->rssi = f->rssi_dbm;
             s->nrates = s->nxrates = 0; s->rsn_len = s->wpa_ie_len = 0;
@@ -109,6 +121,7 @@ static void on_frame(void *ud, const rtl_frame_t *f)
             s->ap_seen = 1;
             if (sub == 8) s->beacon_ms = now_ms();
         } else if (sub == 11 && tome && frombss && len >= 30) {   // auth (transaction 2 or 4)
+            if ((d[24] | d[25] << 8) == 3 && s->auth_cb) { s->auth_cb(s->auth_ud, d + 24, len - 24); return; }
             s->auth_rx_algo = d[24] | d[25] << 8;
             s->auth_status = d[28] | d[29] << 8;
             s->challenge_len = 0;
@@ -118,8 +131,14 @@ static void on_frame(void *ud, const rtl_frame_t *f)
             s->assoc_status = d[26] | d[27] << 8;
             s->aid = (d[28] | d[29] << 8) & 0x3FFF;
             s->assoc_got = 1;
+        } else if (sub == 13 && frombss && s->pmf_active && s->pmf_cb && (tome || (a1[0] & 1))) {   // action: SA Query etc.
+            s->pmf_cb(s->pmf_ud, d, len);
         } else if ((sub == 12 || sub == 10) && frombss && len >= 26 && (tome || (a1[0] & 1))) {   // deauth / disassoc
             int reason = d[24] | d[25] << 8;
+            if (s->pmf_active && s->pmf_cb) {                // 802.11w: only a genuine protected frame may tear the link down
+                reason = s->pmf_cb(s->pmf_ud, d, len);
+                if (reason < 0) { s->pmf_dropped++; return; }
+            }
             if (sub == 12) { s->deauth_seen++; s->deauth_reason = reason; }
             else { s->disassoc_seen++; s->disassoc_reason = reason; }
             s->associated = 0;
@@ -155,7 +174,8 @@ void sta_poll(sta_t *s, int ms, sta_data_cb cb, void *ud)
         long left = end - now_ms();
         if (left < 1) left = 1;
         s->in_rx++;
-        int rc = rtl_rx_poll(s->r, on_frame, &x, left > 30 ? 30 : (int)left);
+        int rc = sta_io ? sta_io->poll(sta_io->ud, on_frame, &x, left > 30 ? 30 : (int)left)
+                        : rtl_rx_poll(s->r, on_frame, &x, left > 30 ? 30 : (int)left);
         s->in_rx--;
         if (rc < 0) break;
     } while (now_ms() < end);
@@ -188,7 +208,21 @@ static int tx_mgmt(sta_t *s, const uint8_t *fr, int n, int rate, int retries, in
 {
     int g = tx_gate(s, may_poll);
     if (g) return g;
-    return rtl_tx_frame(s->r, fr, n, rate, retries) ? 2 : 0;
+    return io_tx_mgmt(fr, n, rate, retries, s);
+}
+
+int sta_send_auth_body(sta_t *s, const uint8_t *body, int blen)
+{
+    uint8_t fr[24 + 600];
+    if (blen < 0 || blen > 600) return 2;
+    put_hdr(fr, 0xB0, s->bssid, s->mac, s->bssid);
+    memcpy(fr + 24, body, blen);
+    return tx_mgmt(s, fr, 24 + blen, s->rate, 7, 1);
+}
+
+int sta_send_mgmt_raw(sta_t *s, const uint8_t *frame, int len)
+{
+    return tx_mgmt(s, frame, len, s->rate, 3, 0);
 }
 
 // ---- management exchanges ----
@@ -305,7 +339,7 @@ int sta_send_data(sta_t *s, const uint8_t dst[6], const uint8_t *body, int blen,
     fr[1] = 0x01 | (prot ? 0x40 : 0);                   // to-DS (+ Protected as given by caller)
     memcpy(fr + 24, body, blen);
     if (tx_gate(s, 0)) return -3;
-    return rtl_tx_data(s->r, fr, 24 + blen, rate, 7);
+    return io_tx_data(s, fr, 24 + blen, rate);
 }
 
 int sta_send_null(sta_t *s)
@@ -314,7 +348,7 @@ int sta_send_null(sta_t *s)
     put_hdr(fr, 0x48, s->bssid, s->mac, s->bssid);      // null function (subtype 4)
     fr[1] = 0x01;                                       // to-DS, PM=0
     if (tx_gate(s, 0)) return -3;
-    return rtl_tx_data(s->r, fr, 24, 60, 7);
+    return io_tx_data(s, fr, 24, 60);
 }
 
 int sta_deauth(sta_t *s, int reason)
