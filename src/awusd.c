@@ -41,6 +41,7 @@
 #include "dns.h"
 #include "modeswitch.h"
 #include "wpslink.h"
+#include "ibss.h"
 
 #define now_ms link_now_ms
 #define LOSS_SILENCE_MS 6000      // nothing heard from the AP for this long = link lost
@@ -92,6 +93,7 @@ static struct {
     unsigned long last_dec_ok, last_tun;
     struct { uint8_t bssid[6]; wps_limiter_t l; int used; } wps_lim[8];   // WPS self rate limiter, one per BSSID
     int wps_lim_next;
+    ibss_t ibss; int ibss_on;                        // ad-hoc (IBSS) network we are beaconing
 } D;
 
 static void LOGF(const char *fmt, ...)
@@ -243,10 +245,20 @@ static int tun_sync(void)
 // ---------------------------------------------------------------- device
 static void led_apply(void);
 
+// Stop the ad-hoc network if it is up (the radio goes back to the idle state).
+static void ibss_drop(void)
+{
+    if (!D.ibss_on) return;
+    if (D.dev && !rtl_usb_dead) ibss_stop(&D.r, &D.ibss);
+    D.ibss_on = 0;
+    LOGF("ad-hoc network stopped");
+}
+
 static void dev_close(const char *why)
 {
     LOGF("device closed: %s", why);
     D.linked = 0;
+    D.ibss_on = 0;
     tun_close();
     if (D.dev) rtl_close(&D.r);
     D.dev = 0;
@@ -356,6 +368,7 @@ static int flag(const char *v, int dflt) { return !v ? dflt : (!strcmp(v, "1") |
 // ---------------------------------------------------------------- scan helpers
 static int do_scan(int band, int dwell, int passes)
 {
+    ibss_drop();
     D.busy = B_SCAN;
     led_apply();
     scan_reset(&D.scan, D.country);
@@ -389,6 +402,7 @@ static int do_join(const conn_t *c, char *why, size_t wn)
     if (D.force_fail > 0) { D.force_fail--; snprintf(why, wn, "debug_forced_failure"); D.joins_failed++; return -1; }
     if (!D.dev) { snprintf(why, wn, "no_device"); return -1; }
     if (D.rf_off) { snprintf(why, wn, "rf_off"); return -1; }
+    ibss_drop();
     if (D.linked) { link_drop(1); }
     D.abort_op = 0;
     int blocked = 0;
@@ -452,6 +466,7 @@ static void link_lost(const char *why)
 
 static void do_leave(void)
 {
+    ibss_drop();
     link_drop(1);
     D.have_target = 0;
     D.hold = 1;
@@ -497,6 +512,16 @@ static void cmd_status(FILE *o)
     kv(o, "uptime_s", "%ld", (now - D.t_start) / 1000);
     kv(o, "root", "%d", is_root());
     kv(o, "hold", "%d", D.hold);
+    kv(o, "adhoc", "%d", D.ibss_on);
+    if (D.ibss_on) {
+        const ibss_t *a = &D.ibss;
+        kv(o, "adhoc_ssid", "%s", a->ssid);
+        kv(o, "adhoc_bssid", "%02x:%02x:%02x:%02x:%02x:%02x", a->bssid[0], a->bssid[1], a->bssid[2], a->bssid[3], a->bssid[4], a->bssid[5]);
+        kv(o, "adhoc_channel", "%d", a->channel);
+        kv(o, "adhoc_beacons_ok", "%lu", a->beacons_ok);
+        kv(o, "adhoc_probe_resp", "%lu", a->probe_resp);
+        kv(o, "adhoc_peers", "%d", a->npeers);
+    }
     kv(o, "autojoin", "%d", D.autojoin_on);
     kv(o, "profiles", "%d", D.profiles.n);
     if (D.dev) {
@@ -730,6 +755,50 @@ static wps_limiter_t *wps_lim_get(const uint8_t *bssid)
 }
 
 // wps pbc|pin [pin=NNNN] [ssid=..] [bssid=..]  /  wps reset (clear the rate limiter, explicit user action)
+// adhoc create|join ssid=NAME ch=N [key=WEPKEY]: beacon as (or join) an IBSS. Beacons run in the chip; the data plane
+// (IP over the ad-hoc link) is not built yet, so this announces the network and answers probe requests.
+static void cmd_adhoc(FILE *o, const proto_req_t *q)
+{
+    const char *mode = proto_pos(q, 0), *ssid = proto_opt(q, "ssid"), *chs = proto_opt(q, "ch"), *key = proto_opt(q, "key");
+    if (mode && !strcmp(mode, "stop")) { ibss_drop(); fprintf(o, "OK\n"); kv(o, "adhoc", "0"); return; }
+    if (!mode || (strcmp(mode, "create") && strcmp(mode, "join"))) { err(o, "usage: adhoc create|join ssid=NAME ch=N [key=WEP5|13chars] | adhoc stop"); return; }
+    if (!ssid || !*ssid || strlen(ssid) > 32) { err(o, "adhoc needs ssid=NAME (1 to 32 bytes)"); return; }
+    int ch = chs ? atoi(chs) : 0;
+    if (ch <= 0) { err(o, "adhoc needs ch=N"); return; }
+    if (key && *key && strlen(key) != 5 && strlen(key) != 13) { err(o, "ad-hoc WEP key must be 5 or 13 characters"); return; }
+    if (!D.dev) { err(o, "no_device"); return; }
+    if (D.rf_off) { err(o, "rf_off"); return; }
+    int cc = country_chan(D.country, ch);
+    if (cc == CC_BLOCKED) { err(o, "channel %d is not allowed in %s", ch, D.country); return; }
+    if (cc == CC_DFS) { err(o, "channel %d needs radar detection (DFS); an ad-hoc network cannot use it", ch); return; }
+    ibss_drop();
+    if (D.linked) link_drop(1);
+    tun_close();
+    D.hold = 1; D.have_target = 0;
+    ibss_t *a = &D.ibss;
+    memset(a, 0, sizeof *a);
+    snprintf(a->ssid, sizeof a->ssid, "%s", ssid);
+    a->channel = ch;
+    if (key && *key) { a->privacy = 1; a->wep_len = (int)strlen(key); memcpy(a->wep_key, key, (size_t)a->wep_len); }
+    if (!strcmp(mode, "join")) {
+        ibss_peer_t pe;
+        int f = ibss_find(&D.r, ch, ssid, 6000, &pe);
+        if (f < 0) { err(o, "usb_error"); return; }
+        if (!f) { err(o, "ibss_not_found"); return; }
+        memcpy(a->bssid, pe.bssid, 6); a->join = 1;
+        if (pe.privacy) a->privacy = 1;
+    }
+    char why[160];
+    if (ibss_start(&D.r, a, why, sizeof why) < 0) { err(o, "ibss_start: %s", why); return; }
+    D.ibss_on = 1;
+    LOGF("ad-hoc %s: channel %d", mode, ch);
+    led_apply();
+    fprintf(o, "OK\n");
+    kv(o, "adhoc", "1"); kv(o, "ssid", "%s", a->ssid); kv(o, "channel", "%d", ch);
+    kv(o, "bssid", "%02x:%02x:%02x:%02x:%02x:%02x", a->bssid[0], a->bssid[1], a->bssid[2], a->bssid[3], a->bssid[4], a->bssid[5]);
+    kv(o, "mac", "%02x:%02x:%02x:%02x:%02x:%02x", a->mac[0], a->mac[1], a->mac[2], a->mac[3], a->mac[4], a->mac[5]);
+}
+
 static void cmd_wps(FILE *o, const proto_req_t *q)
 {
     const char *mode = proto_pos(q, 0), *v;
@@ -858,6 +927,7 @@ static void cmd_rf(FILE *o, const proto_req_t *q)
     if (!D.dev) { err(o, "no_device"); return; }
     if (!strcmp(a, "off")) {
         if (D.rf_off) { fprintf(o, "OK\n"); kv(o, "rf", "off"); return; }
+        ibss_drop();
         link_drop(1);
         tun_close();
         D.rf_off = 1;
@@ -1022,6 +1092,7 @@ static void run_cmd(FILE *o, const proto_req_t *q)
     else if (!strcmp(c, "leave")) { do_leave(); fprintf(o, "OK\n"); kv(o, "state", "%s", state_name[cur_state()]); }
     else if (!strcmp(c, "wps")) cmd_wps(o, q);
     else if (!strcmp(c, "ping")) cmd_ping(o, q);
+    else if (!strcmp(c, "adhoc")) cmd_adhoc(o, q);
     else if (!strcmp(c, "rf")) cmd_rf(o, q);
     else if (!strcmp(c, "txpower")) cmd_txpower(o, q);
     else if (!strcmp(c, "country")) cmd_country(o, q);
@@ -1034,7 +1105,7 @@ static void run_cmd(FILE *o, const proto_req_t *q)
         fprintf(o, "OK\n"); kv(o, "autojoin", "%d", D.autojoin_on); kv(o, "hold", "%d", D.hold);
     }
     else if (!strcmp(c, "quit")) { D.stop_req = 1; fprintf(o, "OK\n"); }
-    else err(o, "unknown command %s (try: status scan join leave ping rf txpower country profile autojoin debug quit)", c);
+    else err(o, "unknown command %s (try: status scan join adhoc leave ping rf txpower country profile autojoin debug quit)", c);
 }
 
 static struct { int used, fd; char line[PROTO_LINE + 1]; } defer;
@@ -1170,7 +1241,7 @@ static int visible_cb(void *ctx, const profile_t *p)
 
 static void idle_tick(void)
 {
-    if (!D.dev || D.rf_off || D.hold || D.linked || defer.used) return;
+    if (!D.dev || D.rf_off || D.hold || D.linked || D.ibss_on || defer.used) return;
     long now = now_ms();
     if (now < D.next_try) return;
     char why[200];
@@ -1305,6 +1376,12 @@ int main(int argc, char **argv)
         }
         if (D.rf_off) { serve_ctl(100, 0); led_apply(); continue; }
         if (D.linked) { serve_ctl(0, 0); if (D.dev && D.linked) connected_tick(); continue; }
+        if (D.ibss_on) {                         // serving our ad-hoc network: beacons run in the chip, we answer probes
+            serve_ctl(0, 0);
+            if (D.dev && D.ibss_on && ibss_tick(&D.r, &D.ibss, 50) < 0) { LOGF("ad-hoc: USB error"); ibss_drop(); }
+            led_apply();
+            continue;
+        }
         serve_ctl(50, 0);
         if (!D.dev) continue;                    // a command (wake / unplug) closed the device
         if (D.dev && now_ms() - D.last_live > 1000) { D.last_live = now_ms(); (void)rtl_r8(&D.r, 0x0); }   // notice an unplug while idle

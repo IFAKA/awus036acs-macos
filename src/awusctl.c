@@ -291,6 +291,7 @@ static int usage(FILE *o)
 "       [--wep-keyid N] [--default-route]     with the daemon: connect and stay; without: join, ping 6x, leave\n"
 "  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates] [--bw 20|40|80]   goodput test (no daemon)\n"
 "  wps pbc | wps pin (--pin N | --pin-env VAR) [--ssid S | --bssid B]   WPS enrol (daemon): saves a profile on success; wps reset clears the limiter\n"
+"  adhoc create|join --ssid S --ch N [--key-env VAR]   beacon as (create) or join an ad-hoc IBSS network (daemon); adhoc stop; leave also stops it\n"
 "  leave                          disconnect and stop auto-join until join / autojoin on / profile add\n"
 "  ping [--host IP] [--count N]   ping the gateway (or IP) from the daemon's link\n"
 "  rf on|off                      radio on/off (off: deauth, RF block disabled, LED off)\n"
@@ -428,6 +429,15 @@ int main(int argc, char **argv)
         if (pin_arg) rq_kv(&q, "pin", pin_arg);
         if (ssid) rq_kv(&q, "ssid", ssid);
         if (bssid) rq_kv(&q, "bssid", bssid);
+        return simple_cmd(&q);
+    }
+    if (!strcmp(cmd, "adhoc")) {
+        if (npos < 1) return usage(stderr);
+        req_t q = {0};
+        rq_word(&q, "adhoc"); rq_word(&q, pos[0]);
+        if (ssid) rq_kv(&q, "ssid", ssid);
+        if (ch) { char t[16]; snprintf(t, sizeof t, "%d", ch); rq_kv(&q, "ch", t); }
+        if (key) rq_kv(&q, "key", key);
         return simple_cmd(&q);
     }
     if (!strcmp(cmd, "ping")) {

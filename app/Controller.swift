@@ -387,7 +387,35 @@ final class Controller: NSObject, NSMenuDelegate {
             self.refreshProfiles(); self.refreshStatus()
         }
     }
-    @objc func adhocAction() { }
+    @objc func adhocAction() {
+        let ssid = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22)); ssid.placeholderString = "Network name"
+        let band = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24), pullsDown: false)
+        let chans: [(String, Int)] = [("2.4 GHz  channel 1", 1), ("2.4 GHz  channel 6", 6), ("2.4 GHz  channel 11", 11), ("5 GHz  channel 36", 36), ("5 GHz  channel 149", 149)]
+        band.addItems(withTitles: chans.map { $0.0 }); band.selectItem(at: 2)
+        let key = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22)); key.placeholderString = "WEP key: 5 or 13 characters (blank = open)"
+        let a = NSAlert(); a.messageText = "Create Ad-hoc Network"
+        a.informativeText = "Other devices can see this network. Only the announcement (beacons) works for now; sharing the internet or a connection over it is not built yet."
+        a.accessoryView = stack([label("Network name"), ssid, label("Channel"), band, label("Password (optional, WEP)"), key])
+        a.addButton(withTitle: "Create"); a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = ssid
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn, !ssid.stringValue.isEmpty else { return }
+        var opts: [(String, String)] = [("ssid", ssid.stringValue), ("ch", String(chans[band.indexOfSelectedItem].1))]
+        if !key.stringValue.isEmpty { opts.append(("key", key.stringValue)) }
+        pending = "Creating ad-hoc network..."
+        refreshUI()
+        request(AwusClient.line("adhoc", ["create"], opts)) { [weak self] r, _ in
+            guard let self = self else { return }
+            self.pending = nil
+            if !r.ok { self.failure("Could not create the ad-hoc network", r) }
+            else {
+                let n = NSAlert(); n.messageText = "Ad-hoc network is on"
+                n.informativeText = "\"\(r.kv["ssid"] ?? "")\" on channel \(r.kv["channel"] ?? ""). Use Disconnect to stop it."
+                NSApp.activate(ignoringOtherApps: true); n.runModal()
+            }
+            self.refreshStatus()
+        }
+    }
 
     @objc func showStatusWindow() {
         if statusWin == nil { statusWin = StatusWindow(controller: self) }

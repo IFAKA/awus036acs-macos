@@ -55,7 +55,8 @@ def err(m): return "ERR %s\n" % m
 def status():
     o = "OK\n"
     o += kv("state", S["state"]) + kv("device", "absent" if S["state"] == "NO_DEVICE" else "present") + kv("rf", S["rf"])
-    o += kv("country", S["country"]) + kv("uptime_s", int(time.time() - T0)) + kv("root", 1) + kv("hold", 0)
+    o += kv("country", S["country"]) + kv("uptime_s", int(time.time() - T0)) + kv("root", 1) + kv("hold", 0) + kv("adhoc", 1 if S.get("adhoc") else 0)
+    if S.get("adhoc"): o += kv("adhoc_ssid", S["adhoc"]["ssid"]) + kv("adhoc_channel", S["adhoc"]["ch"])
     o += kv("autojoin", S["autojoin"]) + kv("profiles", len(PROFILES)) + kv("version", "0.1.0-fake")
     if S["state"] != "NO_DEVICE":
         o += kv("txpower", S["txpower"]) + kv("channel", S["ch"] or 7)
@@ -102,6 +103,7 @@ def handle(line):
             time.sleep(DELAY)
             return "OK\n" + kv("ssid", ssid) + kv("channel", ap[2]) + kv("security", ap[4]) + kv("tun", "link-only")
         if cmd == "leave":
+            S["adhoc"] = None
             S.update(state="IDLE", join_target=None, ssid="")
             return "OK\n" + kv("state", "IDLE")
         if cmd == "rf":
@@ -157,6 +159,16 @@ def handle(line):
                 PROFILES[:] = [q for q in PROFILES if q["ssid"] != "WpsNet"] + [dict(ssid="WpsNet", security="wpa2", key="x" * 12, hidden=0, priority=0, autojoin=1, default_route=0)]
                 return "OK\n" + kv("ssid", "WpsNet") + kv("security", "wpa2") + kv("profile", "saved") + kv("key", "set")
             return err("usage: wps pbc|pin [pin=N] [ssid=NAME | bssid=B] | wps reset")
+        if cmd == "adhoc":   # adhoc create|join ssid=NAME ch=N [key=WEP] | adhoc stop
+            sub = pos[0] if pos else ""
+            if sub == "stop": S["adhoc"] = None; return "OK\n" + kv("adhoc", 0)
+            if sub not in ("create", "join") or not opt.get("ssid") or not opt.get("ch", "").isdigit():
+                return err("usage: adhoc create|join ssid=NAME ch=N [key=WEP5|13chars] | adhoc stop")
+            if S["rf"] == "off": return err("rf_off")
+            if opt.get("key") and len(opt["key"]) not in (5, 13): return err("ad-hoc WEP key must be 5 or 13 characters")
+            if int(opt["ch"]) in (52, 100): return err("channel %s needs radar detection (DFS); an ad-hoc network cannot use it" % opt["ch"])
+            S["adhoc"] = dict(ssid=opt["ssid"], ch=int(opt["ch"]))
+            return "OK\n" + kv("adhoc", 1) + kv("ssid", opt["ssid"]) + kv("channel", opt["ch"]) + kv("bssid", "02:11:22:33:44:55") + kv("mac", "02:aa:bb:cc:dd:ee")
         if cmd == "debug":
             if pos and pos[0] == "drop": S["state"] = "IDLE"; S["drops"] += 1; return "OK\n"
             if pos and pos[0] == "state" and len(pos) > 1: S["state"] = pos[1]; return "OK\n"
