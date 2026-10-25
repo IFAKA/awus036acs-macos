@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include "profile.h"
 
-static const char *const secs[] = { "auto", "open", "wep", "wep-shared", "wpa", "wpa2", "sae" };
+static const char *const secs[] = { "auto", "open", "wep", "wep-shared", "wpa", "wpa2", "sae", "eap" };
 
 int profile_check(const profile_t *p, const char **why)
 {
@@ -20,7 +20,10 @@ int profile_check(const profile_t *p, const char **why)
     int known = 0;
     for (size_t i = 0; i < sizeof secs / sizeof secs[0]; i++) if (!strcmp(p->security, secs[i])) known = 1;
     if (sl < 1 || sl > 32) w = "ssid must be 1-32 bytes";
-    else if (!known) w = "security must be auto, open, wep, wep-shared, wpa, wpa2 or sae";
+    else if (!known) w = "security must be auto, open, wep, wep-shared, wpa, wpa2, sae or eap";
+    else if (!strcmp(p->security, "eap") && !p->eap.identity[0]) w = "802.1X needs an identity";
+    else if (!strcmp(p->security, "eap") && p->eap.method[0] && strcmp(p->eap.method, "peap") && strcmp(p->eap.method, "ttls") && strcmp(p->eap.method, "tls") && strcmp(p->eap.method, "leap")) w = "eap method must be peap, ttls, tls or leap";
+    else if (!strcmp(p->security, "eap") && p->eap.inner[0] && strcmp(p->eap.inner, "mschapv2") && strcmp(p->eap.inner, "pap")) w = "eap inner must be mschapv2 or pap";
     else if (!strcmp(p->security, "open") && kl) w = "an open network has no key";
     else if ((!strcmp(p->security, "wpa") || !strcmp(p->security, "wpa2")) && (kl < 8 || kl > 63)) w = "WPA passphrase must be 8-63 characters";
     else if (!strcmp(p->security, "sae") && (kl < 1 || kl > 63)) w = "SAE password must be 1-63 characters";
@@ -104,7 +107,22 @@ int profiles_to_json(const profiles_t *ps, char *out, size_t cap)
         snprintf(t, sizeof t, ",\"priority\":%d", p->priority); wstr(&w, t);
         snprintf(t, sizeof t, ",\"autojoin\":%s", p->autojoin ? "true" : "false"); wstr(&w, t);
         snprintf(t, sizeof t, ",\"prefer_sae\":%s", p->prefer_sae ? "true" : "false"); wstr(&w, t);
-        snprintf(t, sizeof t, ",\"default_route\":%s}", p->default_route ? "true" : "false"); wstr(&w, t);
+        snprintf(t, sizeof t, ",\"default_route\":%s", p->default_route ? "true" : "false"); wstr(&w, t);
+        if (!strcmp(p->security, "eap") || p->eap.identity[0]) {
+            const eapconf_t *e = &p->eap;
+            wstr(&w, ",\"eap_method\":"); wjson(&w, e->method);
+            wstr(&w, ",\"eap_inner\":"); wjson(&w, e->inner);
+            wstr(&w, ",\"eap_identity\":"); wjson(&w, e->identity);
+            wstr(&w, ",\"eap_anon\":"); wjson(&w, e->anon);
+            wstr(&w, ",\"eap_ca\":"); wjson(&w, e->ca);
+            wstr(&w, ",\"eap_cert\":"); wjson(&w, e->cert);
+            wstr(&w, ",\"eap_key\":"); wjson(&w, e->keyfile);
+            wstr(&w, ",\"eap_key_pass\":"); wjson(&w, e->keypass);
+            wstr(&w, ",\"eap_server_name\":"); wjson(&w, e->server);
+            snprintf(t, sizeof t, ",\"eap_insecure\":%s", e->insecure ? "true" : "false"); wstr(&w, t);
+            snprintf(t, sizeof t, ",\"eap_allow_leap\":%s", e->allow_leap ? "true" : "false"); wstr(&w, t);
+        }
+        wstr(&w, "}");
     }
     wstr(&w, ps->n ? "\n]}\n" : "]}\n");
     return w.bad ? -1 : (int)w.n;
@@ -199,6 +217,17 @@ static int rprofile(rd_t *r, profile_t *p)
         if (!strcmp(k, "ssid")) { if (rstr(r, p->ssid, sizeof p->ssid)) return 1; }
         else if (!strcmp(k, "security")) { if (rstr(r, p->security, sizeof p->security)) return 1; }
         else if (!strcmp(k, "key")) { if (rstr(r, p->key, sizeof p->key)) return 1; }
+        else if (!strcmp(k, "eap_method")) { if (rstr(r, p->eap.method, sizeof p->eap.method)) return 1; }
+        else if (!strcmp(k, "eap_inner")) { if (rstr(r, p->eap.inner, sizeof p->eap.inner)) return 1; }
+        else if (!strcmp(k, "eap_identity")) { if (rstr(r, p->eap.identity, sizeof p->eap.identity)) return 1; }
+        else if (!strcmp(k, "eap_anon")) { if (rstr(r, p->eap.anon, sizeof p->eap.anon)) return 1; }
+        else if (!strcmp(k, "eap_ca")) { if (rstr(r, p->eap.ca, sizeof p->eap.ca)) return 1; }
+        else if (!strcmp(k, "eap_cert")) { if (rstr(r, p->eap.cert, sizeof p->eap.cert)) return 1; }
+        else if (!strcmp(k, "eap_key")) { if (rstr(r, p->eap.keyfile, sizeof p->eap.keyfile)) return 1; }
+        else if (!strcmp(k, "eap_key_pass")) { if (rstr(r, p->eap.keypass, sizeof p->eap.keypass)) return 1; }
+        else if (!strcmp(k, "eap_server_name")) { if (rstr(r, p->eap.server, sizeof p->eap.server)) return 1; }
+        else if (!strcmp(k, "eap_insecure")) { if (rbool(r, &p->eap.insecure)) return 1; }
+        else if (!strcmp(k, "eap_allow_leap")) { if (rbool(r, &p->eap.allow_leap)) return 1; }
         else if (!strcmp(k, "hidden")) { if (rbool(r, &p->hidden)) return 1; }
         else if (!strcmp(k, "autojoin")) { if (rbool(r, &p->autojoin)) return 1; }
         else if (!strcmp(k, "prefer_sae")) { if (rbool(r, &p->prefer_sae)) return 1; }

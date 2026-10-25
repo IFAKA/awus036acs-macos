@@ -45,6 +45,7 @@ const char *link_sec_str(link_sec_t s)
     case LINK_SEC_WPA: return "wpa";
     case LINK_SEC_WPA2: return "wpa2";
     case LINK_SEC_SAE: return "sae";
+    case LINK_SEC_EAP: return "eap";
     }
     return "?";
 }
@@ -62,23 +63,68 @@ const char *link_cipher_str(int c)
 
 void link_ipstr(char *b, size_t n, uint32_t a) { snprintf(b, n, "%u.%u.%u.%u", a >> 24, (a >> 16) & 255, (a >> 8) & 255, a & 255); }
 
-const uint8_t *link_tk(const link_t *l) { return l->sec == LINK_SEC_SAE ? wpa3_get_tk(&l->w3) : wpa_get_tk(&l->w); }
+int link_eap_method(const char *n)
+{
+    if (!n) return 0;
+    return !strcmp(n, "peap") ? EAP_TYPE_PEAP : !strcmp(n, "ttls") ? EAP_TYPE_TTLS : !strcmp(n, "tls") ? EAP_TYPE_TLS : !strcmp(n, "leap") ? EAP_TYPE_LEAP : 0;
+}
+int link_eap_inner(const char *n)
+{
+    if (!n) return -1;
+    return !strcmp(n, "mschapv2") ? EAP_INNER_MSCHAPV2 : !strcmp(n, "pap") ? EAP_INNER_PAP : -1;
+}
+const char *link_eap_method_str(int t)
+{
+    return t == EAP_TYPE_TTLS ? "ttls" : t == EAP_TYPE_TLS ? "tls" : t == EAP_TYPE_LEAP ? "leap" : "peap";
+}
+const char *link_eap_inner_str(int i) { return i == EAP_INNER_PAP ? "pap" : "mschapv2"; }
+
+// The WPA3-style 4-way (wpa3_t) runs for SAE and for Enterprise; WPA1 / WPA2-PSK use wpa_t.
+static int uses_w3(const link_t *l) { return l->sec == LINK_SEC_SAE || l->sec == LINK_SEC_EAP; }
+
+const uint8_t *link_tk(const link_t *l) { return uses_w3(l) ? wpa3_get_tk(&l->w3) : wpa_get_tk(&l->w); }
 
 // ---- handshake ----
 static void send_eapol(link_t *l, const uint8_t *eapol, size_t n, const char *what)
 {
-    uint8_t body[8 + 512];
+    uint8_t body[8 + 2100];
     static const uint8_t llc[8] = {0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E};
+    if (n > 2100) return;
     memcpy(body, llc, 8); memcpy(body + 8, eapol, n);
     int rc = sta_send_data(&l->s, l->s.bssid, body, 8 + (int)n, 0, l->hs_rate);
     LOG("tx EAPOL %s len=%zu rate=%d rc=%d", what, n, l->hs_rate, rc);
+}
+
+// 802.1X EAP packet (EAPOL type 0) from the AP: feed the engine, send its answer; on Success the PMK starts the 4-way.
+static void handle_eap(link_t *l, const uint8_t *e, size_t el)
+{
+    const uint8_t *pkt; size_t pl, ol = 0;
+    uint8_t out[2048], fr[2048 + 4];
+    if (!l->eap || l->eap_state != 1) return;
+    if (eap_eapol_unwrap(e, el, &pkt, &pl) != 0) return;
+    l->eap_pkts++;
+    int st = eap_rx(l->eap, pkt, pl, out, sizeof out, &ol);
+    LOG("rx EAP code=%d len=%zu -> st=%d answer=%zu", pkt[0], pl, st, ol);
+    if (ol) { size_t n = eap_eapol_wrap(fr, out, ol); send_eapol(l, fr, n, "EAP"); }
+    if (st == EAP_ST_SUCCESS) {
+        uint8_t pmk[32];
+        if (eap_get_pmk(l->eap, pmk) || wpa3_init_akm(&l->w3, pmk, l->s.bssid, l->s.mac, l->s.sec_ie, (size_t)l->s.sec_ie_len, l->eap_akm)) {
+            snprintf(l->eap_msg, sizeof l->eap_msg, "no_pmk_from_eap"); l->eap_state = 3;
+        } else { l->eap_state = 2; LOG("EAP success (%s), PMK derived", link_eap_method_str(eap_method(l->eap))); }
+        memset(pmk, 0, sizeof pmk);
+    } else if (st == EAP_ST_FAILURE) {
+        snprintf(l->eap_msg, sizeof l->eap_msg, "%s", eap_error(l->eap)); l->eap_state = 3;
+        LOG("EAP failure: %s", l->eap_msg);
+    }
 }
 
 static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
 {
     uint8_t out[512]; size_t ol = 0; int ev = 0;
     eapol_key_t k;
-    int sae = l->sec == LINK_SEC_SAE;
+    int sae = uses_w3(l);
+    if (l->sec == LINK_SEC_EAP && el >= 4 && e[1] == 0) { handle_eap(l, e, el); return; }
+    if (l->sec == LINK_SEC_EAP && l->eap_state != 2) return;                       // a key frame before EAP-Success: no PMK yet
     if (l->sec != LINK_SEC_WPA2 && l->sec != LINK_SEC_WPA && !sae) return;        // nobody asked for a handshake
     if (eapol_key_parse(e, el, &k) == 0) {
         LOG("rx EAPOL key_info=0x%04x replay=%llu kdlen=%zu", k.info, (unsigned long long)k.replay, k.key_data_len);
@@ -106,7 +152,7 @@ static void handle_eapol(link_t *l, const uint8_t *e, size_t el)
     if (ol) send_eapol(l, out, ol, what);
     if (ev & WPA_EV_PTK) {                 // install the TK only after M4 went out
         l->tk_ready = 1; l->tx_pn = 1; memset(l->rx_pn, 0, sizeof l->rx_pn);
-        if (sae) { l->s.pmf_active = 1; l->rx_pn_mgmt = 0; }       // robust management frames are protected from here on
+        if (sae && l->pmf) { l->s.pmf_active = 1; l->rx_pn_mgmt = 0; }       // robust management frames are protected from here on
         if (l->pw_cipher == LINK_CIPHER_TKIP) { memcpy(l->mic_rx, l->w.ptk + 48, 8); memcpy(l->mic_tx, l->w.ptk + 56, 8); }
         LOG("PTK installed (TK%s)", l->pw_cipher == LINK_CIPHER_TKIP ? " + Michael keys" : "");
     }
@@ -472,6 +518,88 @@ static size_t build_sec_ie(uint8_t *o, int wpa1, int pw, int grp)
     return n;
 }
 
+// Our RSN IE for WPA2-Enterprise: CCMP pairwise, AKM 1 (802.1X) or 5 (802.1X-SHA256), MFPC/MFPR and BIP-CMAC-128 when PMF is used.
+static size_t build_eap_rsn_ie(uint8_t *o, int akm, int grp, int pmf, int pmf_req)
+{
+    size_t n = 0;
+    static const uint8_t oui[3] = {0x00, 0x0F, 0xAC};
+    o[n++] = 48; o[n++] = 0;
+    o[n++] = 1; o[n++] = 0;
+    memcpy(o + n, oui, 3); o[n + 3] = grp == LINK_CIPHER_TKIP ? 2 : 4; n += 4;
+    o[n++] = 1; o[n++] = 0; memcpy(o + n, oui, 3); o[n + 3] = 4; n += 4;
+    o[n++] = 1; o[n++] = 0; memcpy(o + n, oui, 3); o[n + 3] = (uint8_t)akm; n += 4;
+    o[n++] = (uint8_t)((pmf ? 0x80 : 0) | (pmf_req ? 0x40 : 0)); o[n++] = 0;
+    if (pmf) { o[n++] = 0; o[n++] = 0; memcpy(o + n, oui, 3); o[n + 3] = 6; n += 4; }
+    o[1] = (uint8_t)(n - 2);
+    return n;
+}
+
+// Read a whole file (<= 1 MiB) into a malloc buffer, NUL terminated. NULL if unreadable.
+static uint8_t *slurp(const char *path, size_t *n)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    uint8_t *b = NULL;
+    long len = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1;
+    if (len > 0 && len <= (1 << 20) && fseek(f, 0, SEEK_SET) == 0 && (b = malloc((size_t)len + 1))) {
+        if (fread(b, 1, (size_t)len, f) != (size_t)len) { free(b); b = NULL; }
+        else { b[len] = 0; *n = (size_t)len; }
+    }
+    fclose(f);
+    return b;
+}
+
+// Build the EAP engine from the cfg. NULL on error with the reason (static or in l->eap_msg) in *why.
+static eap_t *make_eap(link_t *l, const char **why)
+{
+    const link_cfg_t *c = &l->cfg;
+    uint8_t *ca = NULL, *cert = NULL, *key = NULL; size_t can = 0, cen = 0, kn = 0;
+    eap_t *e = NULL;
+    int method = c->eap_method ? c->eap_method : EAP_TYPE_PEAP;
+    if (!c->eap_identity || !*c->eap_identity) { *why = "no_eap_identity"; return NULL; }
+    if (method != EAP_TYPE_TLS && (!c->key || !*c->key)) { *why = "no_eap_password"; return NULL; }
+    if (c->eap_ca_file && !(ca = slurp(c->eap_ca_file, &can))) { snprintf(l->eap_msg, sizeof l->eap_msg, "cannot_read_ca_file %s", c->eap_ca_file); *why = l->eap_msg; goto done; }
+    if (c->eap_cert_file && !(cert = slurp(c->eap_cert_file, &cen))) { snprintf(l->eap_msg, sizeof l->eap_msg, "cannot_read_cert_file %s", c->eap_cert_file); *why = l->eap_msg; goto done; }
+    if (c->eap_key_file && !(key = slurp(c->eap_key_file, &kn))) { snprintf(l->eap_msg, sizeof l->eap_msg, "cannot_read_key_file %s", c->eap_key_file); *why = l->eap_msg; goto done; }
+    int ms[1] = { method };
+    eap_cfg_t ec = {0};
+    ec.methods = ms; ec.n_methods = 1;
+    if (method == EAP_TYPE_PEAP || method == EAP_TYPE_TTLS) { ec.identity = c->eap_anon ? c->eap_anon : c->eap_identity; ec.inner_identity = c->eap_identity; }
+    else ec.identity = c->eap_identity;
+    ec.password = c->key; ec.inner = c->eap_inner;
+    ec.ca_pem = ca; ec.ca_pem_len = can; ec.cert_pem = cert; ec.cert_pem_len = cen; ec.key_pem = key; ec.key_pem_len = kn;
+    ec.key_pass = c->eap_key_pass; ec.server_name = c->eap_server_name;
+    ec.insecure_skip_verify = c->eap_insecure_skip_verify; ec.allow_leap = c->eap_allow_leap;
+    e = eap_new(&ec);
+    if (!e) { snprintf(l->eap_msg, sizeof l->eap_msg, "eap_config: %s", eap_new_error()); *why = l->eap_msg; }
+done:
+    if (key) { memset(key, 0, kn); free(key); }
+    free(ca); free(cert);
+    return e;
+}
+
+// After association: EAPOL-Start, then EAP over EAPOL until Success / Failure. Returns NULL on success, else a reason.
+static const char *eap_run(link_t *l)
+{
+    sta_t *s = &l->s;
+    uint8_t st[4], fr[8];
+    int dseen = s->deauth_seen + s->disassoc_seen, starts = 0;
+    long end = now_ms() + 30000, next_start = 0;
+    l->eap_state = 1; l->eap_pkts = 0;
+    while (now_ms() < end && l->eap_state == 1 && !(l->stop && *l->stop) && s->deauth_seen + s->disassoc_seen == dseen) {
+        if (!l->eap_pkts && starts < 3 && now_ms() >= next_start) {      // most APs start with an Identity request anyway; ask once more if silent
+            size_t n = eap_eapol_start(st); memcpy(fr, st, n);
+            send_eapol(l, fr, n, "EAPOL-Start"); starts++; next_start = now_ms() + 3000;
+        }
+        sta_poll(s, 50, NULL, NULL);
+    }
+    if (l->eap_state == 2) return NULL;
+    if (l->stop && *l->stop) return "signal";
+    if (l->eap_state == 3) return l->eap_msg;
+    if (s->deauth_seen + s->disassoc_seen != dseen) return "ap_deauth_during_eap";
+    return "timeout (no EAP-Success from the AP)";
+}
+
 // ---- WPA3 SAE exchange (Authentication algorithm 3) ----
 static void sae_auth_rx(void *ud, const uint8_t *b, int n)
 {
@@ -539,10 +667,14 @@ static int resolve_security(link_t *l)
     int rsn_ok = rsn_psk && (ap.rsn_cipher & (SCAN_CIPHER_CCMP | SCAN_CIPHER_TKIP)) && group_cipher(ap.rsn_group) >= 0;
     int wpa_ok = wpa_psk && (ap.wpa_cipher & SCAN_CIPHER_TKIP) && ap.wpa_group == 2;
     int rsn_sae = ap.rsn && (ap.rsn_akm & SCAN_AKM_SAE) && s->rsn_len && (ap.rsn_cipher & SCAN_CIPHER_CCMP) && ap.rsn_group == 4;
+    // Usable 802.1X: AKM 1 or 5, CCMP pairwise, a group cipher we have.
+    int rsn_1x = ap.rsn && (ap.rsn_akm & (SCAN_AKM_1X_PLAIN | SCAN_AKM_1X_SHA256)) && s->rsn_len && (ap.rsn_cipher & SCAN_CIPHER_CCMP) && group_cipher(ap.rsn_group) >= 0;
     if (want == LINK_SEC_AUTO) {
-        if (rsn_sae && (!rsn_ok || !l->cfg.prefer_psk)) want = LINK_SEC_SAE;      // SAE-only AP, or a transition AP and SAE preferred
+        if (rsn_1x && l->cfg.eap_identity) want = LINK_SEC_EAP;                      // the caller gave a 802.1X identity
+        else if (rsn_sae && (!rsn_ok || !l->cfg.prefer_psk)) want = LINK_SEC_SAE;      // SAE-only AP, or a transition AP and SAE preferred
         else if (rsn_ok) want = LINK_SEC_WPA2;
         else if (!ap.rsn && wpa_ok) want = LINK_SEC_WPA;
+        else if (rsn_1x) want = LINK_SEC_EAP;                                        // fails later with no_eap_identity if none was given
         else if (ap.rsn || ap.wpa1) return jfail(l, "scan", "unsupported_security");
         else if (s->ap_cap & 0x0010) want = LINK_SEC_WEP;
         else want = LINK_SEC_OPEN;
@@ -580,7 +712,22 @@ static int resolve_security(link_t *l)
         int caps = wpa3_rsn_caps(s->rsn, (size_t)s->rsn_len);
         l->pmf_required = caps < 0 || (caps & 4) || !(caps & 8);       // MFPR when the AP demands it, and always on a SAE-only AP
         l->sae_h2e = wpa3_ap_h2e(s->ies, (size_t)s->ies_len) != 0;
+        l->pmf = 1;
         break;                                                          // our RSN IE needs the SAE PMKID: built after the SAE exchange
+    }
+    case LINK_SEC_EAP: {
+        if (!s->rsn_len) return jfail(l, "scan", "ap_has_no_rsn_ie");
+        if (!(ap.rsn_akm & SCAN_AKM_1X)) return jfail(l, "scan", "ap_rsn_not_802_1x");
+        if (!rsn_1x) return jfail(l, "scan", "unsupported_cipher_or_akm");
+        l->eap_akm = (ap.rsn_akm & SCAN_AKM_1X_PLAIN) ? 1 : 5;
+        l->pw_cipher = LINK_CIPHER_CCMP;
+        l->grp_cipher = group_cipher(ap.rsn_group);
+        int caps = wpa3_rsn_caps(s->rsn, (size_t)s->rsn_len);
+        int mfpc = caps >= 0 && (caps & 2), mfpr = caps >= 0 && (caps & 4);
+        l->pmf = mfpc || mfpr || l->eap_akm == 5;          // the SHA-256 AKM is only used with PMF
+        l->pmf_required = mfpr;
+        s->sec_ie_len = (int)build_eap_rsn_ie(s->sec_ie, l->eap_akm, l->grp_cipher, l->pmf, l->pmf_required);
+        break;
     }
     case LINK_SEC_WPA:
         if (!s->wpa_ie_len) return jfail(l, "scan", "ap_has_no_wpa_ie");
@@ -593,6 +740,7 @@ static int resolve_security(link_t *l)
         return jfail(l, "scan", "unsupported_security");
     }
     LOG("security: %s pairwise=%s group=%s", link_sec_str(l->sec), link_cipher_str(l->pw_cipher), link_cipher_str(l->grp_cipher));
+    if (l->sec == LINK_SEC_EAP) LOG("802.1X: AKM %d, PMF %s, method %s", l->eap_akm, l->pmf ? (l->pmf_required ? "required" : "capable") : "off", link_eap_method_str(l->cfg.eap_method));
     return 0;
 }
 
@@ -632,12 +780,14 @@ static void apply_plan(link_t *l)
     LOG("plan: %s bw=%d sc=%d centre=%d top mcs=%d sgi=%d", p->mode == MODE_VHT ? "VHT" : "HT", 20 << p->bw, p->sc, p->center, p->max_mcs, p->sgi);
 }
 
-static int join_once(link_t *l)
+static int join_once_inner(link_t *l)
 {
     char b[200];
     sta_t *s = &l->s;
     // fresh state for every attempt
     l->handshake_done = l->rsn_mismatch = l->tk_ready = l->m1_count = 0;
+    l->pmf = l->pmf_required = 0; l->eap_state = 0; l->eap_pkts = 0; l->eap_msg[0] = 0;
+    if (l->eap) { eap_free(l->eap); l->eap = NULL; }
     memset(l->gk, 0, sizeof l->gk);
     memset(l->rx_pn, 0, sizeof l->rx_pn); l->tx_pn = 1; l->hs_rate = l->cfg.hs_rate ? l->cfg.hs_rate : 60;
     s->deauth_seen = s->disassoc_seen = 0; s->associated = 0; s->ap_seen = 0;
@@ -647,8 +797,11 @@ static int join_once(link_t *l)
     if (s->ap_seen == 0 && sta_scan(s, 4000)) return jfail(l, "scan", "no_probe_response");
     LOG("ap bssid=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d", s->bssid[0], s->bssid[1], s->bssid[2], s->bssid[3], s->bssid[4], s->bssid[5], s->rssi);
     if (resolve_security(l)) return -1;
-    int keyed = l->sec == LINK_SEC_WPA2 || l->sec == LINK_SEC_WPA || l->sec == LINK_SEC_SAE;
-    if (keyed) {
+    int keyed = l->sec == LINK_SEC_WPA2 || l->sec == LINK_SEC_WPA || l->sec == LINK_SEC_SAE || l->sec == LINK_SEC_EAP;
+    if (l->sec == LINK_SEC_EAP) {
+        const char *why = "eap_config";
+        if (!(l->eap = make_eap(l, &why))) return jfail(l, "config", why);
+    } else if (keyed) {
         if (!l->cfg.key) return jfail(l, "scan", "no_passphrase");
         if (l->sec != LINK_SEC_SAE) wpa_init_ex(&l->w, l->cfg.key, (const uint8_t *)s->ssid, strlen(s->ssid), s->bssid, s->mac, s->sec_ie, (size_t)s->sec_ie_len,
                     l->pw_cipher == LINK_CIPHER_TKIP, l->sec == LINK_SEC_WPA);
@@ -683,6 +836,12 @@ static int join_once(link_t *l)
     SAY("assoc aid=%d\n", s->aid);
 
     long end;
+    if (l->sec == LINK_SEC_EAP) {
+        const char *why = eap_run(l);
+        if (why) return jfail(l, "eap", why);
+        eap_free(l->eap); l->eap = NULL;
+        SAY("802.1X ok\n");
+    }
     if (keyed) {
         int dseen = s->deauth_seen + s->disassoc_seen;
         end = now_ms() + 10000;
@@ -691,11 +850,11 @@ static int join_once(link_t *l)
         if (l->stop && *l->stop) return jfail(l, "interrupted", "signal");
         if (l->rsn_mismatch) return jfail(l, "handshake", "rsn_ie_mismatch");
         if (s->deauth_seen + s->disassoc_seen != dseen) {
-            snprintf(b, sizeof b, "ap_%s reason=%d m1_seen=%d state=%d", s->deauth_seen ? "deauth" : "disassoc", s->deauth_seen ? s->deauth_reason : s->disassoc_reason, l->m1_count, l->sec == LINK_SEC_SAE ? l->w3.state : l->w.state);
+            snprintf(b, sizeof b, "ap_%s reason=%d m1_seen=%d state=%d", s->deauth_seen ? "deauth" : "disassoc", s->deauth_seen ? s->deauth_reason : s->disassoc_reason, l->m1_count, uses_w3(l) ? l->w3.state : l->w.state);
             return jfail(l, "handshake", b);
         }
         if (!l->handshake_done) {
-            snprintf(b, sizeof b, "timeout m1_seen=%d state=%d eapol_rx=%lu", l->m1_count, l->sec == LINK_SEC_SAE ? l->w3.state : l->w.state, s->eapol_rx);
+            snprintf(b, sizeof b, "timeout m1_seen=%d state=%d eapol_rx=%lu", l->m1_count, uses_w3(l) ? l->w3.state : l->w.state, s->eapol_rx);
             return jfail(l, "handshake", b);
         }
         SAY("handshake ok: M1 rx at %ldms, M4 tx at %ldms (since start)\n", l->t_m1 - l->t0, l->t_hs - l->t0);
@@ -718,6 +877,13 @@ static int join_once(link_t *l)
     return 0;
 }
 
+static int join_once(link_t *l)
+{
+    int rc = join_once_inner(l);
+    if (l->eap) { eap_free(l->eap); l->eap = NULL; }
+    return rc;
+}
+
 int link_rejoin(link_t *l) { return join_once(l); }
 
 // Whole-join retry: up to 3 attempts, 1 s apart, on scan/auth/assoc/handshake failures. Not retried: DHCP, RSN mismatch, no RSN IE, signals.
@@ -736,6 +902,7 @@ int link_join(rtl_t *r, const link_cfg_t *cfg, link_t *l)
         if (join_once(l) == 0) return 0;
         const char *st = l->fail_step, *re = l->fail_reason;
         int retryable = !strcmp(st, "scan") ? !strcmp(re, "no_probe_response")
+                      : !strcmp(st, "eap") ? !strncmp(re, "timeout", 7)          // a rejected login or a bad certificate will not get better
                       : !strcmp(st, "auth") ? !strstr(re, "sae_confirm")        // a wrong passphrase will not get better: do not hammer the AP
                       : !strcmp(st, "assoc")
                       || (!strcmp(st, "handshake") && strcmp(re, "rsn_ie_mismatch"));
@@ -757,7 +924,7 @@ void link_init(link_t *l, rtl_t *r)
 
 void link_leave(link_t *l)
 {
-    if (l->sec == LINK_SEC_SAE && l->s.pmf_active && l->tk_ready && link_tk(l)) {      // PMF: the Deauth must be protected too
+    if (l->s.pmf_active && l->tk_ready && link_tk(l)) {      // PMF: the Deauth must be protected too
         uint8_t hdr[24] = {0xC0, 0}, body[2] = {3, 0}, fr[64];
         memcpy(hdr + 4, l->s.bssid, 6); memcpy(hdr + 10, l->s.mac, 6); memcpy(hdr + 16, l->s.bssid, 6);
         int n = wpa3_mgmt_protect(link_tk(l), hdr, body, 2, l->tx_pn++, 0, fr, sizeof fr);

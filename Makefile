@@ -2,6 +2,15 @@ CC     ?= cc
 CFLAGS  = -O2 -Wall $(shell pkg-config --cflags libusb-1.0)
 LIBS    = $(shell pkg-config --libs libusb-1.0)
 
+# 802.1X / EAP engine (src/eap*.c). TLS is Mbed TLS 4.x linked STATICALLY (GPL-2.0-or-later option, see src/eap_tlsp.h). Everything
+# that links src/link.c needs these: link.c runs the engine for WPA2-Enterprise joins.
+MBED ?= /opt/homebrew/opt/mbedtls
+OSSL ?= /opt/homebrew/opt/openssl@3
+EAP_SRC = src/eap.c src/eap_tls.c src/eap_peap.c src/eap_ttls.c src/eap_leap.c src/eap_mschap.c src/eap_tlsp.c
+EAP_HDR = src/eap.h src/eap_i.h src/eap_mschap.h src/eap_tlsp.h
+MBED_CFLAGS = -I$(MBED)/include
+MBED_LIBS = $(MBED)/lib/libmbedtls.a $(MBED)/lib/libmbedx509.a $(MBED)/lib/libtfpsacrypto.a
+
 .PHONY: stage2 probe monitor inject authtest clean
 stage2: build/stage2
 probe: build/probe
@@ -57,9 +66,9 @@ build/test_net: src/test_net.c src/net.c src/net.h src/tun.c src/tun.h | build
 test-net: build/test_net
 	./build/test_net
 
-WIFI_SRC = $(subst src/inject.c,src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
-build/wifi: $(WIFI_SRC) src/link.h src/tkip.h src/wep.h src/scanparse.h src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
-	$(CC) $(CFLAGS) -o $@ $(WIFI_SRC) $(LIBS)
+WIFI_SRC = $(subst src/inject.c,src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/scanparse.c src/wifi.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC)) $(EAP_SRC)
+build/wifi: $(WIFI_SRC) $(EAP_HDR) src/link.h src/tkip.h src/wep.h src/scanparse.h src/tun.h src/sta.h src/wpa.h src/net.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+	$(CC) $(CFLAGS) $(MBED_CFLAGS) -o $@ $(WIFI_SRC) $(MBED_LIBS) $(LIBS)
 .PHONY: wifi
 wifi: build/wifi
 
@@ -120,16 +129,16 @@ test-phy: build/test_phy
 	./build/test_phy
 test: test-wpa test-net test-scanparse test-wep test-tkip test-awusd test-bench test-phy test-caps test-rate test-dns test-net6 test-link-sae test-link-wps test-ibss
 
-AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/wps.c src/bignum_dh.c src/country.c src/proto.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
-build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
-	$(CC) $(CFLAGS) -o $@ $(AWUSCTL_SRC) $(LIBS)
+AWUSCTL_SRC = $(subst src/inject.c,src/awusctl.c src/bench.c src/benchutil.c src/scanlib.c src/wps.c src/bignum_dh.c src/country.c src/proto.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC)) $(EAP_SRC)
+build/awusctl: $(AWUSCTL_SRC) $(EAP_HDR) src/bench.h src/scanlib.h src/country.h src/proto.h src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
+	$(CC) $(CFLAGS) $(MBED_CFLAGS) -o $@ $(AWUSCTL_SRC) $(MBED_LIBS) $(LIBS)
 .PHONY: awusctl
 awusctl: build/awusctl
 
-AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/modeswitch.c src/dns.c src/scanlib.c src/wps.c src/bignum_dh.c src/wpslink.c src/ibss.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
-AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/wps.h src/wpslink.h src/ibss.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
+AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/modeswitch.c src/dns.c src/scanlib.c src/wps.c src/bignum_dh.c src/wpslink.c src/ibss.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC)) $(EAP_SRC)
+AWUSD_HDR = $(EAP_HDR) src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/wps.h src/wpslink.h src/ibss.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
 build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
-	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)
+	$(CC) $(CFLAGS) $(MBED_CFLAGS) -o $@ $(AWUSD_SRC) $(MBED_LIBS) $(LIBS)
 .PHONY: awusd
 awusd: build/awusd
 
@@ -155,10 +164,10 @@ REL_LIBS = $(LIBUSB_A) -framework IOKit -framework CoreFoundation -framework Sec
 REL_CFLAGS = -O2 -Wall $(shell pkg-config --cflags libusb-1.0)
 build/pkg-bin/awusd: $(AWUSD_SRC) $(AWUSD_HDR)
 	mkdir -p build/pkg-bin
-	$(CC) $(REL_CFLAGS) -o $@ $(AWUSD_SRC) $(REL_LIBS)
-build/pkg-bin/awusctl: $(AWUSCTL_SRC) src/scanlib.h src/country.h src/proto.h
+	$(CC) $(REL_CFLAGS) $(MBED_CFLAGS) -o $@ $(AWUSD_SRC) $(MBED_LIBS) $(REL_LIBS)
+build/pkg-bin/awusctl: $(AWUSCTL_SRC) $(EAP_HDR) src/scanlib.h src/country.h src/proto.h
 	mkdir -p build/pkg-bin
-	$(CC) $(REL_CFLAGS) -o $@ $(AWUSCTL_SRC) $(REL_LIBS)
+	$(CC) $(REL_CFLAGS) $(MBED_CFLAGS) -o $@ $(AWUSCTL_SRC) $(MBED_LIBS) $(REL_LIBS)
 .PHONY: pkg
 pkg: build/pkg-bin/awusd build/pkg-bin/awusctl app
 	sh packaging/build-pkg.sh
@@ -183,10 +192,7 @@ test: test-sae
 # ---- 802.1X / EAP supplicant (PEAP, TTLS, TLS, LEAP): crypto vectors + loopback authenticator over real TLS 1.2.
 # TLS is Mbed TLS 4.x linked STATICALLY, GPL-2.0-or-later option (see src/eap_tlsp.h). The test makes its certificates with the
 # openssl CLI (only a test tool; nothing from OpenSSL is linked). ----
-MBED ?= /opt/homebrew/opt/mbedtls
-OSSL ?= /opt/homebrew/opt/openssl@3
-EAP_SRC = src/eap.c src/eap_tls.c src/eap_peap.c src/eap_ttls.c src/eap_leap.c src/eap_mschap.c src/eap_tlsp.c
-build/test_eap: $(EAP_SRC) src/eap.h src/eap_i.h src/eap_mschap.h src/eap_tlsp.h src/test_eap.c | build
+build/test_eap: $(EAP_SRC) src/eap_testauth.h src/eap.h src/eap_i.h src/eap_mschap.h src/eap_tlsp.h src/test_eap.c | build
 	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOPENSSL_BIN='"$(OSSL)/bin/openssl"' -I$(MBED)/include -o $@ $(EAP_SRC) src/test_eap.c $(MBED)/lib/libmbedtls.a $(MBED)/lib/libmbedx509.a $(MBED)/lib/libtfpsacrypto.a
 .PHONY: test-eap
 test-eap: build/test_eap
@@ -194,12 +200,22 @@ test-eap: build/test_eap
 test: test-eap
 
 # WPA3 / PMF through link.c against an in-process fake AP (software loopback of 802.11 frames; NOT an air test)
-LINKSIM_SRC = $(subst src/inject.c,src/test_link_sae.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
-build/test_link_sae: $(LINKSIM_SRC) src/link.h src/sta.h src/sae.h src/wpa3.h src/wpa.h | build
-	$(CC) -O1 -g -Wall $(shell pkg-config --cflags libusb-1.0) -fsanitize=address,undefined -fno-sanitize-recover=undefined -o $@ $(LINKSIM_SRC) $(LIBS)
+LINKSIM_SRC = $(subst src/inject.c,src/test_link_sae.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/sae.c src/wpa3.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC)) $(EAP_SRC)
+build/test_link_sae: $(LINKSIM_SRC) $(EAP_HDR) src/link.h src/sta.h src/sae.h src/wpa3.h src/wpa.h | build
+	$(CC) -O1 -g -Wall $(shell pkg-config --cflags libusb-1.0) -fsanitize=address,undefined -fno-sanitize-recover=undefined $(MBED_CFLAGS) -o $@ $(LINKSIM_SRC) $(MBED_LIBS) $(LIBS)
 .PHONY: test-link-sae
 test-link-sae: build/test_link_sae
 	./build/test_link_sae
+
+# WPA2-Enterprise through link.c: in-process fake AP running the test authenticator (src/eap_testauth.h) over EAPOL, then the 4-way
+# (software loopback of 802.11 frames; NOT an air test). Needs the openssl CLI to make test certificates.
+LINKEAP_SRC = $(subst src/test_link_sae.c,src/test_link_eap.c,$(LINKSIM_SRC))
+build/test_link_eap: $(LINKEAP_SRC) $(EAP_HDR) src/eap_testauth.h src/link.h src/sta.h src/wpa3.h src/wpa.h | build
+	$(CC) -O1 -g -Wall $(shell pkg-config --cflags libusb-1.0) -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOPENSSL_BIN='"$(OSSL)/bin/openssl"' $(MBED_CFLAGS) -o $@ $(LINKEAP_SRC) $(MBED_LIBS) $(LIBS)
+.PHONY: test-link-eap
+test-link-eap: build/test_link_eap
+	./build/test_link_eap
+test: test-link-eap
 
 # WPS enrollee run (wpslink.c) against a fake AP + the in-test registrar (software loopback; NOT an air test)
 WPSSIM_SRC = $(subst src/inject.c,src/test_link_wps.c src/wpslink.c src/wps.c src/bignum_dh.c src/sta.c src/caps.c src/wep.c,$(INJ_SRC))

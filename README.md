@@ -56,7 +56,7 @@ bridges to a `utun` interface instead.
 - [ ] WPA1/TKIP and mixed mode (unit tests only, not on air)
 - [x] Hidden SSID join (path air-verified; a truly hidden AP is untested)
 - [ ] WPA3-SAE (integrated and covered by a software loopback test only, `make test-link-sae`; never on the air, our router is WPA2-only)
-- [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP
+- [ ] 802.1X EAP: PEAP, TTLS, TLS, LEAP (integrated: `awusctl join --sec eap`, app Join Other, profiles; covered by a software loopback test only, `make test-link-eap`, loopback not air; we have no Enterprise AP or RADIUS server. PEM files only, no PKCS#12; TLS 1.2 only; see docs/EAP.md)
 - [ ] Ad-hoc create/join (create + beacon is air-verified on ch 11: a Mac scan sees the IBSS, interval 100, via `awusctl adhoc create`; SSID text not verified, join and the data plane are not built/tested, see docs/ADHOC.md)
 - [ ] WPS push-button and PIN (integrated: `awusctl wps pbc|pin`, covered by software loopback tests only, `make test-link-wps`; never run against a real router)
 - [x] Saved profiles, auto-join, auto-reconnect with backoff (air-verified, incl. a real unplug/replug and a real sleep/wake, both rejoined by themselves)

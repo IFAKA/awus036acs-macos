@@ -15,10 +15,24 @@
 #define PROFILE_MAX 32
 #define PROFILE_SEC_LEN 12
 
+// WPA2-Enterprise (802.1X) settings. The password is profile.key. Certificates / keys are PEM FILE PATHS (PKCS#12 is not
+// supported), read by the daemon at join time; they never go through the control socket as content.
+typedef struct {
+    char method[8];                   // "peap" (default when empty), "ttls", "tls", "leap"
+    char inner[12];                   // phase 2 for peap/ttls: "mschapv2" (default when empty) or "pap"
+    char identity[96], anon[96];      // identity (user name); optional anonymous outer identity
+    char ca[200], cert[200], keyfile[200];
+    char keypass[64];                 // password of an encrypted client key file (stored like the password: 0600 file only)
+    char server[64];                  // required server certificate name (empty = not checked beyond the CA)
+    int insecure;                     // skip server certificate verification (dangerous)
+    int allow_leap;                   // permit EAP-LEAP (broken, off by default)
+} eapconf_t;
+
 typedef struct {
     char ssid[33];
-    char security[PROFILE_SEC_LEN];   // "auto", "open", "wep", "wep-shared", "wpa", "wpa2", "sae"
-    char key[130];                    // WPA passphrase (8-63) or WEP key; empty for open
+    char security[PROFILE_SEC_LEN];   // "auto", "open", "wep", "wep-shared", "wpa", "wpa2", "sae", "eap"
+    eapconf_t eap;                    // used when security is "eap" (or "auto" with eap.identity set)
+    char key[130];                    // WPA passphrase (8-63), WEP key or 802.1X password; empty for open
     int hidden;
     int priority;                     // higher = preferred by auto-join
     int autojoin;

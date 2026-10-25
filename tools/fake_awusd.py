@@ -25,6 +25,7 @@ APS = [  # ssid, bssid, ch, rssi, security, cipher, phy
     ("Neighbour 5G", "de:ad:be:ef:00:01", 44, -66, "WPA2+WPA3-PSK", "CCMP", "11ac"),
     ("Flaky", "de:ad:be:ef:00:02", 6, -75, "WPA2-PSK", "CCMP", "11n"),
     ("", "de:ad:be:ef:00:03", 3, -85, "WPA2-PSK", "CCMP", "11n"),
+    ("Corp 802.1X", "de:ad:be:ef:00:05", 36, -58, "WPA2-802.1X", "CCMP", "11ac"),
     ("Café Ñandú", "de:ad:be:ef:00:04", 9, -90, "WPA2-PSK", "CCMP", "11n"),
 ]
 DELAY = 0.0
@@ -96,7 +97,12 @@ def handle(line):
             ap = next((a for a in APS if a[0] == ssid), None)
             if not ap and opt.get("hidden") == "1": ap = (ssid, "de:ad:be:ef:99:99", 6, -70, "WPA2-PSK", "CCMP", "11n"); APS.append(ap)
             if not ap: return err("join failed: scan no_probe_response")
-            if ap[4] != "Open" and not opt.get("key") and not any(p["ssid"] == ssid for p in PROFILES):
+            if opt.get("sec") == "eap" or opt.get("identity"):   # 802.1X: identity needed; a password unless EAP-TLS; fake fails on "wrongpass"
+                if not opt.get("identity"): return err("sec eap needs identity")
+                if opt.get("eap_method", "peap") not in ("peap", "ttls", "tls", "leap"): return err("bad eap method")
+                if opt.get("eap_method", "peap") != "tls" and not opt.get("key"): return err("join failed: config:no_eap_password")
+                if opt.get("key") == "wrongpass": return err("join failed: eap:MS-CHAPv2 failure: E=691 R=0 (fake)")
+            elif ap[4] != "Open" and not opt.get("key") and not any(p["ssid"] == ssid for p in PROFILES):
                 return err("join failed: no key")
             if opt.get("key") == "wrongpass": return err("join failed: handshake timeout (wrong password?)")
             S.update(state="JOINING", join_target=ssid, join_at=time.time() + 1.5)
@@ -128,11 +134,15 @@ def handle(line):
         if cmd == "profile":
             sub = pos[0] if pos else ""
             if sub == "list":
-                return "OK\n" + "".join("profile ssid=%s security=%s hidden=%d priority=%d autojoin=%d default_route=0 key=%s\n" % (
-                    enc(p["ssid"]), p["security"], p["hidden"], p["priority"], p["autojoin"], "set" if p["key"] else "none") for p in PROFILES)
+                return "OK\n" + "".join("profile ssid=%s security=%s hidden=%d priority=%d autojoin=%d default_route=0 key=%s%s\n" % (
+                    enc(p["ssid"]), p["security"], p["hidden"], p["priority"], p["autojoin"], "set" if p["key"] else "none",
+                    (" eap_method=%s eap_inner=%s identity=%s ca=%s" % (p.get("eap_method", "peap"), p.get("eap_inner", "mschapv2"), enc(p.get("identity", "")), enc(p.get("ca", "")) or "none")) if p["security"] == "eap" else "") for p in PROFILES)
             if sub == "add":
                 p = dict(ssid=opt.get("ssid", ""), security=opt.get("security", "auto"), key=opt.get("key", ""),
                          hidden=int(opt.get("hidden", "0") in ("1", "true")), priority=int(opt.get("priority", 0)), autojoin=1, default_route=0)
+                if p["security"] == "eap":
+                    if not opt.get("identity"): return err("invalid profile: 802.1X needs an identity")
+                    p.update(eap_method=opt.get("eap_method", "peap"), eap_inner=opt.get("eap_inner", "mschapv2"), identity=opt["identity"], ca=opt.get("ca", ""))
                 if not p["ssid"]: return err("invalid profile: ssid")
                 PROFILES[:] = [q for q in PROFILES if q["ssid"] != p["ssid"]] + [p]
                 return "OK\n"

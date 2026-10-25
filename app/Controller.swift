@@ -265,6 +265,7 @@ final class Controller: NSObject, NSMenuDelegate {
         guard let ap = s.representedObject as? AP else { return }
         if profiles.contains(where: { $0.ssid == ap.ssid }) { doJoin(ssid: ap.ssid, key: nil, sec: nil, hidden: false, remember: false); return }
         if !ap.secured { doJoin(ssid: ap.ssid, key: nil, sec: "open", hidden: false, remember: false); return }
+        if ap.sec.contains("802.1X") { joinSheet(prefill: ap.ssid, enterprise: true); return }
         guard let r = askPassword(ssid: ap.ssid, security: ap.sec) else { return }
         doJoin(ssid: ap.ssid, key: r.key, sec: nil, hidden: false, remember: r.remember)
     }
@@ -273,8 +274,8 @@ final class Controller: NSObject, NSMenuDelegate {
         if let ssid = s.representedObject as? String { doJoin(ssid: ssid, key: nil, sec: nil, hidden: false, remember: false) }
     }
 
-    func doJoin(ssid: String, key: String?, sec: String?, hidden: Bool, remember: Bool) {
-        var opts: [(String, String)] = [("ssid", ssid)]
+    func doJoin(ssid: String, key: String?, sec: String?, hidden: Bool, remember: Bool, extra: [(String, String)] = []) {
+        var opts: [(String, String)] = [("ssid", ssid)] + extra
         if let k = key, !k.isEmpty { opts.append(("key", k)) }
         if let s = sec { opts.append(("sec", s)) }
         if hidden { opts.append(("hidden", "1")) }
@@ -288,6 +289,7 @@ final class Controller: NSObject, NSMenuDelegate {
                 var p: [(String, String)] = [("ssid", ssid), ("security", sec ?? "auto")]
                 if let k = key, !k.isEmpty { p.append(("key", k)) }
                 if hidden { p.append(("hidden", "1")) }
+                p += extra
                 self.request(AwusClient.line("profile", ["add"], p)) { r2, _ in
                     if !r2.ok { self.failure("Joined, but could not save the network", r2) }
                     self.refreshProfiles()
@@ -297,22 +299,52 @@ final class Controller: NSObject, NSMenuDelegate {
         }
     }
 
-    @objc func joinOther() {
-        let ssid = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22)); ssid.placeholderString = "Network name"
+    @objc func joinOther() { joinSheet(prefill: nil, enterprise: false) }
+
+    // The Join Other sheet. "802.1X (Enterprise)" shows the extra fields below; they are ignored for other security types.
+    // Certificates are PEM file paths (no PKCS#12). Loopback-tested only: no Enterprise access point has been tried on air.
+    func joinSheet(prefill: String?, enterprise: Bool) {
+        func field(_ ph: String) -> NSTextField { let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22)); f.placeholderString = ph; return f }
+        let ssid = field("Network name"); if let p = prefill { ssid.stringValue = p }
         let sec = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24), pullsDown: false)
-        let secs: [(String, String)] = [("Detect automatically", "auto"), ("Open (no password)", "open"), ("WPA / WPA2 Personal", "wpa2"), ("WPA Personal (older)", "wpa"), ("WEP (open)", "wep"), ("WEP (shared key)", "wep-shared")]
+        let secs: [(String, String)] = [("Detect automatically", "auto"), ("Open (no password)", "open"), ("WPA / WPA2 Personal", "wpa2"), ("WPA Personal (older)", "wpa"), ("WEP (open)", "wep"), ("WEP (shared key)", "wep-shared"), ("802.1X (WPA2 Enterprise)", "eap")]
         sec.addItems(withTitles: secs.map { $0.0 })
+        if enterprise { sec.selectItem(at: secs.count - 1) }
         let hidden = NSButton(checkboxWithTitle: "Hidden network", target: nil, action: nil)
         let key = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22)); key.placeholderString = "Password"
+        let methods: [(String, String)] = [("PEAP", "peap"), ("TTLS", "ttls"), ("TLS (client certificate)", "tls")]
+        let method = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24), pullsDown: false); method.addItems(withTitles: methods.map { $0.0 })
+        let inners: [(String, String)] = [("MS-CHAPv2", "mschapv2"), ("PAP", "pap")]
+        let inner = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24), pullsDown: false); inner.addItems(withTitles: inners.map { $0.0 })
+        let identity = field("User name (identity)"), anon = field("Anonymous identity (optional)")
+        let ca = field("CA certificate file (.pem)"), cert = field("Client certificate file (.pem, TLS only)"), ckey = field("Client key file (.pem, TLS only)")
+        let server = field("Server name to require (optional)")
+        let insecure = NSButton(checkboxWithTitle: "Do not verify the server certificate (unsafe)", target: nil, action: nil)
         let rem = NSButton(checkboxWithTitle: "Remember this network", target: nil, action: nil); rem.state = .on
-        let form = stack([label("Network name"), ssid, label("Security"), sec, hidden, label("Password"), key, rem])
+        let form = stack([label("Network name"), ssid, label("Security"), sec, hidden, label("Password"), key,
+                          label("802.1X only: method, inner method, identity, files (PEM only, TLS 1.2)"), method, inner, identity, anon, ca, cert, ckey, server, insecure, rem])
         let a = NSAlert(); a.messageText = "Join Other Network"; a.informativeText = "Enter the details of the network."
         a.accessoryView = form; a.addButton(withTitle: "Join"); a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = ssid
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn, !ssid.stringValue.isEmpty else { return }
         let s = secs[sec.indexOfSelectedItem].1
-        doJoin(ssid: ssid.stringValue, key: s == "open" ? nil : key.stringValue, sec: s, hidden: hidden.state == .on, remember: rem.state == .on)
+        var extra: [(String, String)] = []
+        if s == "eap" {
+            let m = methods[method.indexOfSelectedItem].1
+            guard !identity.stringValue.isEmpty else { failureText("802.1X needs a user name (identity)"); return }
+            extra = [("eap_method", m), ("eap_inner", inners[inner.indexOfSelectedItem].1), ("identity", identity.stringValue)]
+            if !anon.stringValue.isEmpty { extra.append(("anon", anon.stringValue)) }
+            if !ca.stringValue.isEmpty { extra.append(("ca", ca.stringValue)) }
+            if m == "tls" { if !cert.stringValue.isEmpty { extra.append(("cert", cert.stringValue)) }; if !ckey.stringValue.isEmpty { extra.append(("client_key", ckey.stringValue)) } }
+            if !server.stringValue.isEmpty { extra.append(("server_name", server.stringValue)) }
+            if insecure.state == .on { extra.append(("insecure", "1")) }
+        }
+        doJoin(ssid: ssid.stringValue, key: s == "open" ? nil : key.stringValue, sec: s, hidden: hidden.state == .on, remember: rem.state == .on, extra: extra)
+    }
+
+    func failureText(_ t: String) {
+        let a = NSAlert(); a.messageText = t; a.runModal()
     }
 
     func askPassword(ssid: String, security: String) -> (key: String, remember: Bool)? {

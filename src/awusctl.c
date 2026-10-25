@@ -8,6 +8,8 @@
 // they never appear on a command line. Only join networks you own or are allowed to test. Direct-mode log: /tmp/awusctl.log
 #include <arpa/inet.h>
 #include <stdio.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -215,6 +217,38 @@ static void bench_report(link_t *L, uint32_t peer)
     free(d);
 }
 
+// 802.1X options (join / profile add). File options are made absolute here because the daemon has another working directory.
+static struct { const char *method, *inner, *identity, *anon, *ca, *cert, *client_key, *key_pass_env, *server; int insecure, allow_leap; } g_eap;
+static char g_eap_abs[3][PATH_MAX];
+static const char *abspath(const char *p, char *out)
+{
+    if (!p) return NULL;
+    if (!realpath(p, out)) { fprintf(stderr, "awusctl: cannot find file %s\n", p); return (const char *)-1; }
+    return out;
+}
+static int eap_files_abs(void)
+{
+    const char **f[3] = { &g_eap.ca, &g_eap.cert, &g_eap.client_key };
+    for (int i = 0; i < 3; i++) { const char *a = abspath(*f[i], g_eap_abs[i]); if (a == (const char *)-1) return -1; *f[i] = a; }
+    return 0;
+}
+static int eap_given(void) { return g_eap.identity || g_eap.method || g_eap.ca || g_eap.cert; }
+static void eap_to_req(req_t *q, int profile)
+{
+    (void)profile;
+    if (g_eap.method) rq_kv(q, "eap_method", g_eap.method);
+    if (g_eap.inner) rq_kv(q, "eap_inner", g_eap.inner);
+    if (g_eap.identity) rq_kv(q, "identity", g_eap.identity);
+    if (g_eap.anon) rq_kv(q, "anon", g_eap.anon);
+    if (g_eap.ca) rq_kv(q, "ca", g_eap.ca);
+    if (g_eap.cert) rq_kv(q, "cert", g_eap.cert);
+    if (g_eap.client_key) rq_kv(q, "client_key", g_eap.client_key);
+    if (g_eap.key_pass_env) { const char *kp = getenv(g_eap.key_pass_env); if (kp) rq_kv(q, "key_pass", kp); }
+    if (g_eap.server) rq_kv(q, "server_name", g_eap.server);
+    if (g_eap.insecure) rq_kv(q, "insecure", "1");
+    if (g_eap.allow_leap) rq_kv(q, "allow_leap", "1");
+}
+
 static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hidden, const char *sec_s, const char *key_env, int keyid)
 {
     uint8_t bssid[6]; int have_b = 0;
@@ -224,13 +258,17 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
         if (!strcmp(sec_s, "auto")) sec = LINK_SEC_AUTO; else if (!strcmp(sec_s, "open")) sec = LINK_SEC_OPEN;
         else if (!strcmp(sec_s, "wep")) sec = LINK_SEC_WEP; else if (!strcmp(sec_s, "wep-shared")) sec = LINK_SEC_WEP_SHARED;
         else if (!strcmp(sec_s, "wpa")) sec = LINK_SEC_WPA; else if (!strcmp(sec_s, "wpa2")) sec = LINK_SEC_WPA2; else if (!strcmp(sec_s, "sae")) sec = LINK_SEC_SAE;
-        else { fprintf(E, "awusctl join: --sec must be auto, open, wep, wep-shared, wpa, wpa2 or sae\n"); return 2; }
+        else if (!strcmp(sec_s, "eap")) sec = LINK_SEC_EAP;
+        else { fprintf(E, "awusctl join: --sec must be auto, open, wep, wep-shared, wpa, wpa2, sae or eap\n"); return 2; }
     }
     const char *key = key_env ? getenv(key_env) : NULL;
     if ((sec == LINK_SEC_WPA || sec == LINK_SEC_WPA2 || sec == LINK_SEC_SAE || sec == LINK_SEC_WEP || sec == LINK_SEC_WEP_SHARED) && !key) {
         fprintf(E, "awusctl join: --sec %s needs --key-env VAR\n", link_sec_str(sec)); return 2;
     }
     if (sec == LINK_SEC_OPEN) key = NULL;
+    if (sec == LINK_SEC_EAP && !g_eap.identity) { fprintf(E, "awusctl join: --sec eap needs --identity U\n"); return 2; }
+    if (sec == LINK_SEC_EAP && !key && (!g_eap.method || strcmp(g_eap.method, "tls"))) { fprintf(E, "awusctl join: --sec eap needs --key-env VAR (the password), except for --eap-method tls\n"); return 2; }
+    if (eap_files_abs()) return 2;
     if (!freopen("/tmp/awusctl.log", "w", stderr)) return 2;
     setvbuf(stderr, NULL, _IOLBF, 0);
     fprintf(E, "awusctl: awusd is not running; joining directly (one shot)\n");
@@ -248,6 +286,13 @@ static int cmd_join_direct(const char *ssid, const char *bssid_s, int ch, int hi
     link_init(&L, &r);
     L.out = E; L.stop = &stop_req;
     link_cfg_t cfg = { .ssid = ssid, .bssid = have_b ? bssid : NULL, .channel = ch, .hidden = hidden, .sec = sec, .key = key, .wep_keyid = keyid, .legacy = g_legacy, .max_bw = g_maxbw, .data_rate = g_rate, .vht = g_vht, .prefer_psk = g_prefer_psk };
+    if (eap_given()) {
+        cfg.eap_identity = g_eap.identity; cfg.eap_anon = g_eap.anon;
+        cfg.eap_method = link_eap_method(g_eap.method); cfg.eap_inner = link_eap_inner(g_eap.inner);
+        cfg.eap_ca_file = g_eap.ca; cfg.eap_cert_file = g_eap.cert; cfg.eap_key_file = g_eap.client_key;
+        cfg.eap_key_pass = g_eap.key_pass_env ? getenv(g_eap.key_pass_env) : NULL;
+        cfg.eap_server_name = g_eap.server; cfg.eap_insecure_skip_verify = g_eap.insecure; cfg.eap_allow_leap = g_eap.allow_leap;
+    }
     int rc = 1;
     if (link_join(&r, &cfg, &L)) { fprintf(E, "join FAIL %s %s\n", L.fail_step, L.fail_reason); goto out; }
     char ips[20], gws[20];
@@ -287,8 +332,11 @@ static int usage(FILE *o)
 "usage: awusctl COMMAND [options]       (talks to the awusd daemon; scan and join also work without it)\n"
 "  status                         state, link, lease, LED, counters\n"
 "  scan [--band 2|5|all] [--dwell MS] [--passes N] [--json] [--country CC (direct mode)]\n"
-"  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|sae|auto] [--prefer-psk] [--key-env VAR]\n"
+"  join --ssid S [--bssid B] [--ch N] [--hidden] [--sec open|wep|wep-shared|wpa|wpa2|sae|eap|auto] [--prefer-psk] [--key-env VAR]\n"
 "       [--wep-keyid N] [--default-route]     with the daemon: connect and stay; without: join, ping 6x, leave\n"
+"  join ... --sec eap --identity U [--eap-method peap|ttls|tls|leap] [--eap-inner mschapv2|pap] [--anon-identity A] [--ca FILE.pem]\n"
+"       [--cert FILE.pem --client-key FILE.pem [--key-pass-env VAR]] [--server-name NAME] [--insecure-skip-verify] [--allow-leap]\n"
+"       WPA2-Enterprise (802.1X). The password comes from --key-env. PEM files only (no PKCS#12), TLS 1.2 only. Not yet tried on air.\n"
 "  bench --ssid S [--ch N] [--key-env VAR] [--secs N] [--down 20,50,100] [--legacy-rates] [--bw 20|40|80]   goodput test (no daemon)\n"
 "  wps pbc | wps pin (--pin N | --pin-env VAR) [--ssid S | --bssid B]   WPS enrol (daemon): saves a profile on success; wps reset clears the limiter\n"
 "  adhoc create|join --ssid S --ch N [--key-env VAR]   beacon as (create) or join an ad-hoc IBSS network (daemon); adhoc stop; leave also stops it\n"
@@ -297,7 +345,7 @@ static int usage(FILE *o)
 "  rf on|off                      radio on/off (off: deauth, RF block disabled, LED off)\n"
 "  txpower get | txpower set 0-63\n"
 "  country get | country set CC   (%s)\n"
-"  profile add --ssid S [--key-env VAR] [--security auto|open|wep|wpa|wpa2|sae] [--prefer-psk] [--hidden] [--priority N]\n"
+"  profile add --ssid S [--key-env VAR] [--security auto|open|wep|wpa|wpa2|sae|eap] [--prefer-psk] [--hidden] [--priority N]\n"
 "                [--no-autojoin] [--default-route] | profile list | profile remove --ssid S\n"
 "  autojoin on|off|get\n"
 "  debug drop | unplug [MS] | wake | failnext N | renew | rebind | led on|off|auto     (test hooks)\n"
@@ -330,6 +378,17 @@ int main(int argc, char **argv)
         else if (OPT("--pin-env")) pin_env = argv[++i];
         else if (OPT("--sec")) sec = argv[++i];
         else if (OPT("--security")) security = argv[++i];
+        else if (OPT("--eap-method")) g_eap.method = argv[++i];
+        else if (OPT("--eap-inner")) g_eap.inner = argv[++i];
+        else if (OPT("--identity")) g_eap.identity = argv[++i];
+        else if (OPT("--anon-identity")) g_eap.anon = argv[++i];
+        else if (OPT("--ca")) g_eap.ca = argv[++i];
+        else if (OPT("--cert")) g_eap.cert = argv[++i];
+        else if (OPT("--client-key")) g_eap.client_key = argv[++i];
+        else if (OPT("--key-pass-env")) g_eap.key_pass_env = argv[++i];
+        else if (OPT("--server-name")) g_eap.server = argv[++i];
+        else if (!strcmp(a, "--insecure-skip-verify")) g_eap.insecure = 1;
+        else if (!strcmp(a, "--allow-leap")) g_eap.allow_leap = 1;
         else if (OPT("--bssid")) bssid = argv[++i];
         else if (OPT("--host")) host = argv[++i];
         else if (OPT("--band")) band = argv[++i];
@@ -363,6 +422,10 @@ int main(int argc, char **argv)
         if (!key || !*key) { fprintf(E, "awusctl %s: environment variable %s is empty or unset\n", cmd, key_env); return 2; }
     }
 
+    if (eap_given() || g_eap.inner || g_eap.insecure) {
+        if (g_eap.method && strcmp(g_eap.method, "peap") && strcmp(g_eap.method, "ttls") && strcmp(g_eap.method, "tls") && strcmp(g_eap.method, "leap")) { fprintf(E, "awusctl %s: --eap-method must be peap, ttls, tls or leap\n", cmd); return 2; }
+        if (g_eap.inner && strcmp(g_eap.inner, "mschapv2") && strcmp(g_eap.inner, "pap")) { fprintf(E, "awusctl %s: --eap-inner must be mschapv2 or pap\n", cmd); return 2; }
+    }
     if (!strcmp(cmd, "scan")) {
         int reach;
         int rc = scan_via_daemon(band, dwell, passes, json, &reach);
@@ -388,6 +451,7 @@ int main(int argc, char **argv)
         if (hidden) rq_kv(&q, "hidden", "1");
         if (defroute) rq_kv(&q, "default_route", "1");
         if (g_prefer_psk) rq_kv(&q, "prefer_sae", "0");
+        if (eap_given()) { if (eap_files_abs()) return 2; eap_to_req(&q, 0); }
         char *resp; const char *body;
         int rc = call(&q, &resp, &body);
         if (rc != 3) {
@@ -419,6 +483,7 @@ int main(int argc, char **argv)
         if (noauto) rq_kv(&q, "autojoin", "0");
         if (defroute) rq_kv(&q, "default_route", "1");
         if (g_prefer_psk) rq_kv(&q, "prefer_sae", "0");
+        if (eap_given()) { if (eap_files_abs()) return 2; eap_to_req(&q, 1); }
         return simple_cmd(&q);
     }
     if (!strcmp(cmd, "wps")) {

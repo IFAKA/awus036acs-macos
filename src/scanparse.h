@@ -13,6 +13,8 @@
 #define SCAN_AKM_1X   0x02   // 802.1X / EAP (incl. FT-1X, SHA256, Suite B)
 #define SCAN_AKM_SAE  0x04   // WPA3-Personal
 #define SCAN_AKM_OWE  0x08   // Enhanced Open
+#define SCAN_AKM_1X_PLAIN  0x10   // AKM 00-0F-AC:1 exactly (always together with SCAN_AKM_1X)
+#define SCAN_AKM_1X_SHA256 0x20   // AKM 00-0F-AC:5 (802.1X-SHA256), also together with SCAN_AKM_1X
 // Pairwise cipher bits
 #define SCAN_CIPHER_CCMP 0x01   // CCMP-128 or CCMP-256
 #define SCAN_CIPHER_TKIP 0x02

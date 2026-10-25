@@ -97,6 +97,25 @@ static void t_profile(void)
         CHECK(profiles_from_json("{\"profiles\":[{\"ssid\":\"a\",\"security\":\"sae\",\"key\":\"pw\"}]}", &two, NULL) == 0 && two.n == 1 && two.p[0].prefer_sae == 1);
         sp.key[0] = 0; CHECK(profile_check(&sp, &why) != 0);
     }
+    {   // 802.1X profile: identity required, method / inner checked, every field round-trips, password only in key
+        profile_t ep = mk("corp", "eap", "s3cret pass", 0, 1); const char *why;
+        CHECK(profile_check(&ep, &why) != 0);                                  // no identity
+        snprintf(ep.eap.identity, sizeof ep.eap.identity, "alice@example.org");
+        CHECK(profile_check(&ep, &why) == 0);                                  // method defaults to peap
+        snprintf(ep.eap.method, sizeof ep.eap.method, "ttls"); snprintf(ep.eap.inner, sizeof ep.eap.inner, "pap");
+        snprintf(ep.eap.anon, sizeof ep.eap.anon, "anonymous"); snprintf(ep.eap.ca, sizeof ep.eap.ca, "/etc/ca \"x\".pem");
+        snprintf(ep.eap.cert, sizeof ep.eap.cert, "/etc/c.pem"); snprintf(ep.eap.keyfile, sizeof ep.eap.keyfile, "/etc/k.pem");
+        snprintf(ep.eap.keypass, sizeof ep.eap.keypass, "kp"); snprintf(ep.eap.server, sizeof ep.eap.server, "radius.example.org");
+        ep.eap.insecure = 1; ep.eap.allow_leap = 1;
+        profiles_t one = {0}, two = {0}; char j2[4096];
+        CHECK(profiles_put(&one, &ep, &why) == 0 && profiles_to_json(&one, j2, sizeof j2) > 0 && profiles_from_json(j2, &two, NULL) == 0);
+        CHECK(two.n == 1 && !memcmp(&two.p[0], &one.p[0], sizeof(profile_t)) && two.p[0].eap.insecure == 1 && two.p[0].eap.allow_leap == 1);
+        snprintf(ep.eap.method, sizeof ep.eap.method, "md5"); CHECK(profile_check(&ep, &why) != 0);
+        snprintf(ep.eap.method, sizeof ep.eap.method, "peap"); snprintf(ep.eap.inner, sizeof ep.eap.inner, "chap"); CHECK(profile_check(&ep, &why) != 0);
+        profile_t pl = mk("plain", "wpa2", "passphrase1", 0, 1); profiles_t pp = {0};
+        profiles_put(&pp, &pl, &why); profiles_to_json(&pp, j2, sizeof j2);
+        CHECK(!strstr(j2, "eap_"));                                            // non-enterprise profiles keep the old file format
+    }
     CHECK(profiles_from_json("", &back, NULL) == -1 && profiles_from_json("{\"profiles\":[{\"ssid\":}]}", &back, NULL) == -1 && profiles_from_json("[]", &back, NULL) == -1);
     CHECK(profiles_from_json("{\"profiles\":[{\"ssid\":\"a\",\"security\":\"open\",\"extra\":{\"x\":[1,2,\"]\"]},\"future\":1.5e3}],\"other\":null}", &back, &skipped) == 0 && back.n == 1 && skipped == 0);
     CHECK(profiles_from_json("{\"profiles\":[{\"ssid\":\"a\",\"security\":\"wpa2\",\"key\":\"short\"},{\"ssid\":\"b\",\"security\":\"open\"}]}", &back, &skipped) == 0 && back.n == 1 && skipped == 1);
@@ -140,7 +159,7 @@ static void t_proto(void)
     CHECK(proto_parse("", &q) == -1 && proto_parse("   ", &q) == -1 && proto_parse("=x", &q) == -1 && proto_parse("Join", &q) == -1);
     CHECK(proto_parse("x %zz", &q) == -1 && proto_parse("x %4", &q) == -1 && proto_parse("x %", &q) == -1 && proto_parse("x %00", &q) == -1);
     CHECK(proto_parse("x a=%G1", &q) == -1);
-    CHECK(proto_parse("x 1 2 3 4 5 6 7", &q) == -1 && proto_parse("x a=1 b=1 c=1 d=1 e=1 f=1 g=1 h=1 i=1 j=1 k=1 l=1 m=1 n=1 o=1 p=1 q=1", &q) == -1);
+    CHECK(proto_parse("x 1 2 3 4 5 6 7", &q) == -1 && proto_parse("x a=1 b=1 c=1 d=1 e=1 f=1 g=1 h=1 i=1 j=1 k=1 l=1 m=1 n=1 o=1 p=1 q=1 r=1 s=1 t=1 u=1 v=1 w=1 x=1 y=1 z=1 a2=1 b2=1 c2=1 d2=1 e2=1 f2=1 g2=1 h2=1", &q) == -1);
     char big[PROTO_LINE + 8]; memset(big, 'a', sizeof big); big[sizeof big - 1] = 0;
     CHECK(proto_parse(big, &q) == -1);
     char longv[400]; strcpy(longv, "x k="); memset(longv + 4, 'b', 300); longv[304] = 0;

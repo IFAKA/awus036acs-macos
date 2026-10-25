@@ -13,9 +13,9 @@
 #define PROTO_H
 #include <stddef.h>
 
-#define PROTO_LINE 1024
+#define PROTO_LINE 2048
 #define PROTO_MAXPOS 6
-#define PROTO_MAXOPT 16
+#define PROTO_MAXOPT 32
 #define PROTO_VAL 200
 
 typedef struct {

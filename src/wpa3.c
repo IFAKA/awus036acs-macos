@@ -207,8 +207,14 @@ int wpa3_parse_kdes(const uint8_t *kd, size_t len, wpa3_kdes_t *o) {
 
 int wpa3_init(wpa3_t *w, const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
               const uint8_t *rsn_ie, size_t rsn_len) {
-    if (rsn_len > sizeof w->rsn_ie) return -1;
+    return wpa3_init_akm(w, pmk, aa, spa, rsn_ie, rsn_len, 8);
+}
+
+int wpa3_init_akm(wpa3_t *w, const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
+                  const uint8_t *rsn_ie, size_t rsn_len, int akm) {
+    if (rsn_len > sizeof w->rsn_ie || (akm != 8 && akm != 5 && akm != 1)) return -1;
     memset(w, 0, sizeof *w);
+    w->akm = akm;
     memcpy(w->pmk, pmk, 32); memcpy(w->aa, aa, 6); memcpy(w->spa, spa, 6);
     memcpy(w->rsn_ie, rsn_ie, rsn_len); w->rsn_len = rsn_len;
     return 0;
@@ -218,15 +224,22 @@ const uint8_t *wpa3_get_tk(const wpa3_t *w) { return w->state == 2 ? w->ptk + 32
 const uint8_t *wpa3_get_ptk(const wpa3_t *w) { return w->state == 2 ? w->ptk : NULL; }
 
 #define MAX_KD 512
-#define KEYINFO_VER0 0
 
-/* build an EAPOL-Key frame (descriptor 2, version 0) and fill the CMAC MIC */
-static int build_key(uint8_t *out, size_t cap, uint16_t info, uint64_t replay, const uint8_t nonce[32],
+/* key descriptor version by AKM: 8 (SAE) 0, 5 (802.1X-SHA256) 3, 1 (802.1X) 2 */
+static uint16_t key_ver(const wpa3_t *w) { return w->akm == 1 ? 2 : w->akm == 5 ? 3 : 0; }
+
+/* build an EAPOL-Key frame (descriptor 2) and fill the MIC: AES-CMAC, or HMAC-SHA1-128 for AKM 1 */
+static int build_key(const wpa3_t *w, uint8_t *out, size_t cap, uint16_t info, uint64_t replay, const uint8_t nonce[32],
                      const uint8_t *kd, size_t kd_len, const uint8_t kck[16]) {
-    int n = eapol_key_build(out, cap, (uint16_t)(info & ~EAPOL_KEY_VER_MASK), 0, replay, nonce, kd, kd_len, NULL);
+    info = (uint16_t)((info & ~EAPOL_KEY_VER_MASK) | key_ver(w));
+    int n = eapol_key_build(out, cap, info, 0, replay, nonce, kd, kd_len, w->akm == 1 ? kck : NULL);
     if (n < 0) return n;
-    if (info & EAPOL_KEY_MIC) wpa3_eapol_mic(kck, out, (size_t)n, out + 4 + 77);
+    if ((info & EAPOL_KEY_MIC) && w->akm != 1) wpa3_eapol_mic(kck, out, (size_t)n, out + 4 + 77);
     return n;
+}
+
+static int verify_mic(const wpa3_t *w, const uint8_t *e, size_t flen) {
+    return w->akm == 1 ? eapol_key_verify_mic(w->ptk, e, flen) : wpa3_eapol_verify_mic(w->ptk, e, flen);
 }
 
 static int decrypt_kd(const wpa3_t *w, const eapol_key_t *k, uint8_t *plain) {
@@ -255,7 +268,7 @@ int wpa3_rx_eapol(wpa3_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t 
     int n;
     *out_len = 0; *event = 0;
     if (eapol_key_parse(e, len, &k)) return WPA_ERR_MALFORMED;
-    if (k.desc != 2 || (k.info & EAPOL_KEY_VER_MASK) != KEYINFO_VER0) return WPA_ERR_MALFORMED;
+    if (k.desc != 2 || (k.info & EAPOL_KEY_VER_MASK) != key_ver(w)) return WPA_ERR_MALFORMED;
     if ((k.info & (EAPOL_KEY_REQUEST | EAPOL_KEY_ERROR)) || !(k.info & EAPOL_KEY_ACK)) return WPA_ERR_UNEXPECTED;
     int pairwise = !!(k.info & EAPOL_KEY_PAIRWISE);
 
@@ -264,9 +277,10 @@ int wpa3_rx_eapol(wpa3_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t 
         if (k.info & (EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE)) return WPA_ERR_MALFORMED;
         memcpy(w->anonce, k.nonce, 32);
         arc4random_buf(w->snonce, 32);
-        wpa3_ptk(w->pmk, w->aa, w->spa, w->anonce, w->snonce, w->ptk);
+        if (w->akm == 1) wpa_ptk(w->pmk, w->aa, w->spa, w->anonce, w->snonce, w->ptk);
+        else wpa3_ptk(w->pmk, w->aa, w->spa, w->anonce, w->snonce, w->ptk);
         w->replay = k.replay; w->have_replay = 1;
-        n = build_key(out, 256 + w->rsn_len, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC, k.replay, w->snonce,
+        n = build_key(w, out, 256 + w->rsn_len, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC, k.replay, w->snonce,
                       w->rsn_ie, w->rsn_len, w->ptk);
         if (n < 0) return WPA_ERR_MALFORMED;
         *out_len = (size_t)n; w->state = 1;
@@ -275,7 +289,7 @@ int wpa3_rx_eapol(wpa3_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t 
 
     if (!(k.info & EAPOL_KEY_MIC) || !(k.info & EAPOL_KEY_SECURE)) return WPA_ERR_MALFORMED;
     if (w->state == 0) return WPA_ERR_UNEXPECTED;
-    if (wpa3_eapol_verify_mic(w->ptk, e, k.frame_len)) return WPA_ERR_MIC;
+    if (verify_mic(w, e, k.frame_len)) return WPA_ERR_MIC;
     if (w->have_replay && k.replay <= w->replay) return WPA_ERR_REPLAY;
 
     uint8_t kd[MAX_KD];
@@ -289,7 +303,7 @@ int wpa3_rx_eapol(wpa3_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t 
         w->replay = k.replay; w->have_replay = 1;
         memcpy(w->ap_rsn, kdes.rsn, kdes.rsn_len); w->ap_rsn_len = kdes.rsn_len;
         take_keys(w, &kdes, event, first);
-        n = build_key(out, 256, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC | EAPOL_KEY_SECURE, k.replay, NULL, NULL, 0, w->ptk);
+        n = build_key(w, out, 256, EAPOL_KEY_PAIRWISE | EAPOL_KEY_MIC | EAPOL_KEY_SECURE, k.replay, NULL, NULL, 0, w->ptk);
         if (n < 0) return WPA_ERR_MALFORMED;
         *out_len = (size_t)n;
         w->state = 2;
@@ -304,7 +318,7 @@ int wpa3_rx_eapol(wpa3_t *w, const uint8_t *e, size_t len, uint8_t *out, size_t 
     if (wpa3_parse_kdes(kd, (size_t)n, &kdes) < 0 || (!kdes.have_gtk && !kdes.have_igtk)) return WPA_ERR_KEYDATA;
     w->replay = k.replay;
     take_keys(w, &kdes, event, 1);
-    n = build_key(out, 256, EAPOL_KEY_MIC | EAPOL_KEY_SECURE | (uint16_t)(k.info & 0x30), k.replay, NULL, NULL, 0, w->ptk);
+    n = build_key(w, out, 256, EAPOL_KEY_MIC | EAPOL_KEY_SECURE | (uint16_t)(k.info & 0x30), k.replay, NULL, NULL, 0, w->ptk);
     if (n < 0) return WPA_ERR_MALFORMED;
     *out_len = (size_t)n;
     return 0;

@@ -15,6 +15,7 @@
 #include "wpa.h"
 #include "wpa3.h"
 #include "sae.h"
+#include "eap.h"
 #include "net.h"
 #include "net6.h"
 #include "rate.h"
@@ -26,7 +27,8 @@ typedef enum {
     LINK_SEC_WEP_SHARED,    // WEP 40/104, shared-key (challenge) auth
     LINK_SEC_WPA,           // WPA1 (vendor IE), TKIP, PSK
     LINK_SEC_WPA2,          // WPA2 (RSN), CCMP preferred, TKIP if that is all the AP has, PSK
-    LINK_SEC_SAE            // WPA3-Personal: SAE (group 19, H2E when the AP has it, else hunting-and-pecking), AKM 8, PMF, CCMP
+    LINK_SEC_SAE,           // WPA3-Personal: SAE (group 19, H2E when the AP has it, else hunting-and-pecking), AKM 8, PMF, CCMP
+    LINK_SEC_EAP            // WPA2-Enterprise: 802.1X / EAP after association, then the 4-way with PMK = MSK[0..32). AKM 1 or 5, CCMP, PMF if the AP wants it
 } link_sec_t;
 
 #define LINK_CIPHER_NONE 0
@@ -47,6 +49,16 @@ typedef struct {
     int max_bw;             // width cap in MHz: 0 = as wide as the AP allows (up to 80), else 20 / 40 / 80
     int prefer_psk;         // AUTO on a WPA2/WPA3 transition AP: 1 = use WPA2-PSK, 0 (default) = prefer SAE (profile key prefer_sae=1)
     int no_dhcp;            // 1 = stop after the key handshake (no DHCP): WPS / loopback tests
+    // WPA2-Enterprise (sec = LINK_SEC_EAP, or AUTO with eap_identity set on an 802.1X AP). The EAP password is `key`. Files are PEM.
+    // PKCS#12 is not supported and only TLS 1.2 is offered (see eap.h). LOOPBACK-TESTED ONLY, never on the air.
+    const char *eap_identity;   // user name (the inner identity for PEAP / TTLS; the only identity for TLS / LEAP)
+    const char *eap_anon;       // outer ("anonymous") identity sent in the clear; NULL = eap_identity
+    int eap_method;             // EAP_TYPE_PEAP (default when 0), EAP_TYPE_TTLS, EAP_TYPE_TLS, EAP_TYPE_LEAP
+    int eap_inner;              // EAP_INNER_MSCHAPV2 (default) or EAP_INNER_PAP (TTLS only)
+    const char *eap_ca_file;    // PEM trust anchors for the RADIUS server certificate (required unless eap_insecure_skip_verify)
+    const char *eap_cert_file, *eap_key_file, *eap_key_pass;   // EAP-TLS client certificate chain, private key (default: the cert file), key passphrase
+    const char *eap_server_name;                               // name the server certificate must match (optional)
+    int eap_insecure_skip_verify, eap_allow_leap;              // INSECURE switches
     int hs_rate, data_rate; // TX rates (Mbps*10) for EAPOL and data; 0 = 60 (6 Mbps OFDM)
 } link_cfg_t;
 
@@ -59,6 +71,9 @@ typedef struct link {
     wpa3_t w3;                      // used instead of w when sec == LINK_SEC_SAE
     sae_t sae;
     int sae_done, sae_rc, sae_sent_confirm, sae_h2e, pmf_required;
+    int pmf;                        // PMF negotiated (SAE always, EAP when the AP is MFPC/MFPR or AKM 5): protect robust management frames after the handshake
+    eap_t *eap; int eap_state, eap_akm, eap_pkts;   // 802.1X: engine, 0 idle / 1 running / 2 success / 3 failed, AKM 1 or 5, EAP packets received
+    char eap_msg[160];
     char sae_reason[48];
     int have_igtk, igtk_id; uint8_t igtk[16]; uint8_t igtk_rx_ipn[6]; uint64_t rx_pn_mgmt;
     unsigned long st_sa_query;
@@ -120,6 +135,11 @@ const uint8_t *link_tk(const link_t *l);
 void link_leave(link_t *l);
 // Human text for a security mode / cipher.
 const char *link_sec_str(link_sec_t s);
+// "peap" / "ttls" / "tls" / "leap" -> EAP_TYPE_*, 0 if unknown. "mschapv2" / "pap" -> EAP_INNER_*, -1 if unknown. And back.
+int  link_eap_method(const char *name);
+int  link_eap_inner(const char *name);
+const char *link_eap_method_str(int type);
+const char *link_eap_inner_str(int inner);
 const char *link_cipher_str(int c);
 void link_ipstr(char *b, size_t n, uint32_t a);
 #endif

@@ -10,7 +10,9 @@
 static unsigned akm_bit(uint8_t t)
 {
     switch (t) {
-    case 1: case 3: case 5: case 11: case 12: return SCAN_AKM_1X;
+    case 1: return SCAN_AKM_1X | SCAN_AKM_1X_PLAIN;
+    case 5: return SCAN_AKM_1X | SCAN_AKM_1X_SHA256;
+    case 3: case 11: case 12: return SCAN_AKM_1X;
     case 2: case 4: case 6: return SCAN_AKM_PSK;
     case 8: case 9: return SCAN_AKM_SAE;
     case 18: return SCAN_AKM_OWE;

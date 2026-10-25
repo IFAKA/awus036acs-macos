@@ -74,9 +74,14 @@ typedef struct {
     uint8_t igtk[16]; int igtk_id; uint8_t igtk_ipn[6]; int have_igtk;
     uint64_t replay; int have_replay;
     int state;                               /* 0 idle, 1 M2 sent, 2 installed */
+    int akm;                                 /* 8 SAE (key descriptor version 0), 5 802.1X-SHA256 (3), 1 802.1X (2, SHA-1 PTK + HMAC-SHA1 MIC) */
 } wpa3_t;
 int wpa3_init(wpa3_t *w, const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
               const uint8_t *rsn_ie, size_t rsn_len);
+/* Same, for the WPA2-Enterprise AKMs: akm 1 (802.1X, SHA-1 KDF, HMAC-SHA1-128 MIC), 5 (802.1X-SHA256), or 8. The PMK is
+ * MSK[0..32) from eap_get_pmk(). Returns -1 for another akm. */
+int wpa3_init_akm(wpa3_t *w, const uint8_t pmk[32], const uint8_t aa[6], const uint8_t spa[6],
+                  const uint8_t *rsn_ie, size_t rsn_len, int akm);
 /* Same contract as wpa_rx_eapol (WPA_ERR_* on rejection, *event = WPA3_EV_* mask). out >= 256 + rsn_len bytes. */
 int wpa3_rx_eapol(wpa3_t *w, const uint8_t *eapol, size_t len, uint8_t *out, size_t *out_len, int *event);
 const uint8_t *wpa3_get_tk(const wpa3_t *w);   /* 16 bytes or NULL */

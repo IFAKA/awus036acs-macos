@@ -58,6 +58,7 @@ static const char *const state_name[] = { "NO_DEVICE", "IDLE", "SCANNING", "JOIN
 typedef struct {                  // a connection we want (and remember for reconnects)
     char ssid[33], key[130];
     link_sec_t sec;
+    eapconf_t eap;                // 802.1X settings (sec eap, or auto with an identity)
     int hidden, channel, have_bssid, default_route, prefer_psk;
     uint8_t bssid[6];
 } conn_t;
@@ -351,6 +352,7 @@ static link_sec_t parse_sec(const char *v, int *ok)
     if (!strcmp(v, "wpa")) return LINK_SEC_WPA;
     if (!strcmp(v, "wpa2")) return LINK_SEC_WPA2;
     if (!strcmp(v, "sae")) return LINK_SEC_SAE;
+    if (!strcmp(v, "eap")) return LINK_SEC_EAP;
     *ok = 0;
     return LINK_SEC_AUTO;
 }
@@ -394,6 +396,23 @@ static const scan_entry_t *scan_find(const char *ssid, int *blocked)
     return best;
 }
 
+// ---------------------------------------------------------------- 802.1X options
+static void eap_from_req(const proto_req_t *q, eapconf_t *e)
+{
+    const char *v;
+    if ((v = proto_opt(q, "eap_method"))) snprintf(e->method, sizeof e->method, "%s", v);
+    if ((v = proto_opt(q, "eap_inner"))) snprintf(e->inner, sizeof e->inner, "%s", v);
+    if ((v = proto_opt(q, "identity"))) snprintf(e->identity, sizeof e->identity, "%s", v);
+    if ((v = proto_opt(q, "anon"))) snprintf(e->anon, sizeof e->anon, "%s", v);
+    if ((v = proto_opt(q, "ca"))) snprintf(e->ca, sizeof e->ca, "%s", v);
+    if ((v = proto_opt(q, "cert"))) snprintf(e->cert, sizeof e->cert, "%s", v);
+    if ((v = proto_opt(q, "client_key"))) snprintf(e->keyfile, sizeof e->keyfile, "%s", v);
+    if ((v = proto_opt(q, "key_pass"))) snprintf(e->keypass, sizeof e->keypass, "%s", v);
+    if ((v = proto_opt(q, "server_name"))) snprintf(e->server, sizeof e->server, "%s", v);
+    if ((v = proto_opt(q, "insecure"))) e->insecure = flag(v, 0);
+    if ((v = proto_opt(q, "allow_leap"))) e->allow_leap = flag(v, 0);
+}
+
 // ---------------------------------------------------------------- join
 // Joins c (blocking; the hook keeps the socket alive). 0 = connected, else -1 with a reason in why.
 static int do_join(const conn_t *c, char *why, size_t wn)
@@ -425,6 +444,15 @@ static int do_join(const conn_t *c, char *why, size_t wn)
     D.L.out = D.logf; D.L.stop = &D.abort_op;
     link_cfg_t cfg = { .ssid = cc.ssid, .bssid = cc.have_bssid ? cc.bssid : NULL, .channel = cc.channel, .hidden = cc.hidden,
                        .sec = cc.sec, .key = cc.key[0] ? cc.key : NULL, .legacy = D.legacy_rates, .prefer_psk = cc.prefer_psk };
+    if (cc.sec == LINK_SEC_EAP || cc.eap.identity[0]) {
+        const eapconf_t *e = &cc.eap;
+        cfg.eap_identity = e->identity[0] ? e->identity : NULL; cfg.eap_anon = e->anon[0] ? e->anon : NULL;
+        cfg.eap_method = link_eap_method(e->method); cfg.eap_inner = link_eap_inner(e->inner);
+        cfg.eap_ca_file = e->ca[0] ? e->ca : NULL; cfg.eap_cert_file = e->cert[0] ? e->cert : NULL;
+        cfg.eap_key_file = e->keyfile[0] ? e->keyfile : NULL; cfg.eap_key_pass = e->keypass[0] ? e->keypass : NULL;
+        cfg.eap_server_name = e->server[0] ? e->server : NULL;
+        cfg.eap_insecure_skip_verify = e->insecure; cfg.eap_allow_leap = e->allow_leap;
+    }
     int rc = link_join(&D.r, &cfg, &D.L);
     D.busy = B_NONE;
     if (rc) {
@@ -637,6 +665,7 @@ static void profile_from_req(const proto_req_t *q, profile_t *p, int *auto_given
     if ((v = proto_opt(q, "ssid"))) snprintf(p->ssid, sizeof p->ssid, "%s", v);
     if ((v = proto_opt(q, "key"))) snprintf(p->key, sizeof p->key, "%s", v);
     if ((v = proto_opt(q, "security"))) snprintf(p->security, sizeof p->security, "%s", v);
+    eap_from_req(q, &p->eap);
     if ((v = proto_opt(q, "priority"))) p->priority = atoi(v);
     p->hidden = flag(proto_opt(q, "hidden"), 0);
     p->default_route = flag(proto_opt(q, "default_route"), 0);
@@ -655,8 +684,16 @@ static void cmd_profile(FILE *o, const proto_req_t *q)
             const profile_t *p = &D.profiles.p[i];
             char s[200], sec[40];
             proto_enc(s, sizeof s, p->ssid); proto_enc(sec, sizeof sec, p->security);
-            fprintf(o, "profile ssid=%s security=%s hidden=%d priority=%d autojoin=%d prefer_sae=%d default_route=%d key=%s\n",
+            fprintf(o, "profile ssid=%s security=%s hidden=%d priority=%d autojoin=%d prefer_sae=%d default_route=%d key=%s",
                     s, sec, p->hidden, p->priority, p->autojoin, p->prefer_sae, p->default_route, p->key[0] ? "set" : "none");
+            if (!strcmp(p->security, "eap") || p->eap.identity[0]) {
+                char id[200], ca[420];
+                proto_enc(id, sizeof id, p->eap.identity); proto_enc(ca, sizeof ca, p->eap.ca);
+                fprintf(o, " eap_method=%s eap_inner=%s identity=%s ca=%s cert=%s client_key=%s insecure=%d",
+                        p->eap.method[0] ? p->eap.method : "peap", p->eap.inner[0] ? p->eap.inner : "mschapv2", id, p->eap.ca[0] ? ca : "none",
+                        p->eap.cert[0] ? "set" : "none", p->eap.keyfile[0] ? "set" : "none", p->eap.insecure);
+            }
+            fprintf(o, "\n");
         }
         return;
     }
@@ -705,6 +742,7 @@ static void conn_from_profile(conn_t *c, const profile_t *p)
     snprintf(c->ssid, sizeof c->ssid, "%s", p->ssid);
     snprintf(c->key, sizeof c->key, "%s", p->key);
     c->sec = parse_sec(p->security, &ok);
+    c->eap = p->eap;
     c->hidden = p->hidden; c->default_route = p->default_route; c->prefer_psk = !p->prefer_sae;
 }
 
@@ -714,16 +752,18 @@ static void cmd_join(FILE *o, const proto_req_t *q)
     if (!ssid || !*ssid) { err(o, "usage: join ssid=NAME [key=.. sec=.. hidden=0|1 bssid=.. ch=N default_route=0|1]"); return; }
     conn_t c;
     const profile_t *p = profiles_find(&D.profiles, ssid);
-    if (p && !proto_opt(q, "key") && !proto_opt(q, "sec")) conn_from_profile(&c, p);
+    if (p && !proto_opt(q, "key") && !proto_opt(q, "sec") && !proto_opt(q, "identity")) conn_from_profile(&c, p);
     else {
         memset(&c, 0, sizeof c);
         snprintf(c.ssid, sizeof c.ssid, "%s", ssid);
         int ok;
         c.sec = parse_sec(proto_opt(q, "sec"), &ok);
-        if (!ok) { err(o, "sec must be auto, open, wep, wep-shared, wpa, wpa2 or sae"); return; }
+        if (!ok) { err(o, "sec must be auto, open, wep, wep-shared, wpa, wpa2, sae or eap"); return; }
+        eap_from_req(q, &c.eap);
+        if (c.sec == LINK_SEC_EAP && !c.eap.identity[0]) { err(o, "sec eap needs identity"); return; }
         if ((v = proto_opt(q, "key"))) snprintf(c.key, sizeof c.key, "%s", v);
         if (c.sec == LINK_SEC_OPEN) c.key[0] = 0;
-        if (c.sec >= LINK_SEC_WEP && !c.key[0]) { err(o, "sec %s needs key", link_sec_str(c.sec)); return; }
+        if (c.sec >= LINK_SEC_WEP && c.sec != LINK_SEC_EAP && !c.key[0]) { err(o, "sec %s needs key", link_sec_str(c.sec)); return; }
         c.hidden = flag(proto_opt(q, "hidden"), 0);
     }
     if ((v = proto_opt(q, "ch"))) { c.channel = atoi(v); if (c.channel < 0 || c.channel > 165) { err(o, "bad ch"); return; } }
