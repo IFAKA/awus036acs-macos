@@ -23,8 +23,8 @@ INJ_SRC = src/rtl_usb.c src/rtl_power.c src/rtl_fw.c src/fw8821a.c src/phy.c src
 build/inject: $(INJ_SRC) src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h | build
 	$(CC) $(CFLAGS) -o $@ $(INJ_SRC) $(LIBS)
 
-build/probe: src/probe.c | build
-	$(CC) $(CFLAGS) -o $@ src/probe.c $(LIBS)
+build/probe: src/probe.c src/modeswitch.c src/modeswitch.h | build
+	$(CC) $(CFLAGS) -o $@ src/probe.c src/modeswitch.c $(LIBS)
 
 clean:
 	rm -rf build
@@ -78,8 +78,8 @@ build/test_tkip: src/tkip.c src/tkip.h src/wep.c src/wep.h src/test_tkip.c | bui
 .PHONY: test-tkip
 test-tkip: build/test_tkip
 	./build/test_tkip
-AWUSD_PURE = src/country.c src/profile.c src/proto.c src/led.c src/rtl_usb.c
-build/test_awusd: $(AWUSD_PURE) src/country.h src/profile.h src/proto.h src/led.h src/rtl.h src/test_awusd.c | build
+AWUSD_PURE = src/country.c src/profile.c src/proto.c src/led.c src/rtl_usb.c src/modeswitch.c
+build/test_awusd: $(AWUSD_PURE) src/country.h src/profile.h src/proto.h src/led.h src/rtl.h src/modeswitch.h src/test_awusd.c | build
 	$(CC) -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=undefined $(shell pkg-config --cflags libusb-1.0) -o $@ $(AWUSD_PURE) src/test_awusd.c $(LIBS)
 .PHONY: test-awusd
 test-awusd: build/test_awusd
@@ -126,7 +126,7 @@ build/awusctl: $(AWUSCTL_SRC) src/bench.h src/scanlib.h src/country.h src/proto.
 .PHONY: awusctl
 awusctl: build/awusctl
 
-AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/dns.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
+AWUSD_SRC = $(subst src/inject.c,src/awusd.c src/modeswitch.c src/dns.c src/scanlib.c src/country.c src/profile.c src/proto.c src/led.c src/scanparse.c src/sta.c src/caps.c src/rate.c src/wep.c src/tkip.c src/link.c src/wpa.c src/net.c src/net6.c src/tun.c,$(INJ_SRC))
 AWUSD_HDR = src/link.h src/sta.h src/wpa.h src/net.h src/tkip.h src/wep.h src/scanparse.h src/scanlib.h src/country.h src/profile.h src/proto.h src/led.h src/tun.h src/rtl.h src/phy.h src/mac.h src/rx.h src/tx.h src/bringup.h src/pwrseq8821a.h src/tables.h
 build/awusd: $(AWUSD_SRC) $(AWUSD_HDR) | build
 	$(CC) $(CFLAGS) -o $@ $(AWUSD_SRC) $(LIBS)

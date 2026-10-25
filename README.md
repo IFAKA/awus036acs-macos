@@ -67,7 +67,7 @@ bridges to a `utun` interface instead.
 - [ ] LED (register readback only; visual check pending)
 - [ ] Menu-bar app and installer: built, tested against a fake daemon only; not installed or run against hardware
 - [ ] DHCP renew done and air-verified; IPv6 and DNS applied to the interface are not built
-- [ ] USB mode-switch ("fake CD") handling confirmed
+- [ ] USB mode-switch ("fake CD") handling: eject logic unit-tested; this unit never shows the CD stage, so it is not confirmed on a real stick
 - [ ] Long-run stability and root `utun` + default-route mode tested
 
 Other known gaps:

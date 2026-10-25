@@ -39,6 +39,7 @@
 #include "proto.h"
 #include "led.h"
 #include "dns.h"
+#include "modeswitch.h"
 
 #define now_ms link_now_ms
 #define LOSS_SILENCE_MS 6000      // nothing heard from the AP for this long = link lost
@@ -252,6 +253,8 @@ static void dev_close(const char *why)
 
 static int rf_disable(void) { return rtl_w8(&D.r, REG_RF_CTRL, 0x00); }
 
+static void ms_log(const char *l) { LOGF("%s", l); }
+
 static void dev_try_open(void)
 {
     if (now_ms() < D.sim_unplug_until) return;
@@ -260,6 +263,10 @@ static void dev_try_open(void)
     D.r.tx_power_pinned = D.txpower_pinned; D.r.tx_power = D.txpower;
     if (rtl_bringup(&D.r, 1, &step, b, sizeof b)) {
         if (strcmp(step, "open")) { LOGF("bring-up failed at %s: %s", step, b); set_err("bringup %s: %s", step, b); }
+        else {                                    // no 0bda:0811: maybe it still shows its fake-CD stage (not seen on this unit)
+            static long next_ms;
+            if (now_ms() >= next_ms) { next_ms = now_ms() + 5000; if (modeswitch_scan(ms_log) > 0) D.next_open = now_ms() + 2500; }
+        }
         rtl_close(&D.r);
         return;
     }

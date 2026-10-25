@@ -12,6 +12,7 @@
 #include "profile.h"
 #include "proto.h"
 #include "led.h"
+#include "modeswitch.h"
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -180,9 +181,31 @@ static void t_led(void)
     CHECK(led_want(&l, 9000) == 0 && led_want(&l, 9100) == 0);
 }
 
+static void t_modeswitch(void)
+{
+    // the unit we have: straight WLAN, no CD stage -> never touched, whatever class bits it reports
+    CHECK(modeswitch_decide(0x0bda, 0x0811, 0, 0xff) == MS_NONE);
+    CHECK(modeswitch_decide(0x0bda, 0x0811, 8, 8) == MS_NONE);
+    // the RtWlanDisk case: Realtek VID, known driver-CD PID, class 8 on the device or on interface 0
+    CHECK(modeswitch_decide(0x0bda, 0x1a2b, 0, 8) == MS_EJECT);
+    CHECK(modeswitch_decide(0x0bda, 0x1a2b, 8, 0) == MS_EJECT);
+    CHECK(modeswitch_decide(0x0bda, 0x1a2b, 0, 0xff) == MS_NONE);          // already a vendor-class device: nothing to eject
+    CHECK(modeswitch_decide(0x0bda, 0x1a2b, 0, 0) == MS_NONE);
+    // a Realtek card reader is mass storage with the same VID but not a driver CD: must never be ejected
+    CHECK(modeswitch_decide(0x0bda, 0x0316, 0, 8) == MS_NONE && modeswitch_decide(0x0bda, 0x0129, 8, 8) == MS_NONE);
+    CHECK(modeswitch_decide(0x1234, 0x1a2b, 0, 8) == MS_NONE);             // other vendors untouched
+    uint8_t cbw[31];
+    modeswitch_build_cbw(cbw, 0x11223344);
+    CHECK(!memcmp(cbw, "USBC", 4) && cbw[4] == 0x44 && cbw[7] == 0x11);
+    CHECK(cbw[14] == 6 && cbw[15] == 0x1B && cbw[19] == 0x02 && cbw[12] == 0);       // START STOP UNIT, LoEj=1 Start=0
+    static const uint8_t usb_modeswitch_msg[31] = { 0x55,0x53,0x42,0x43, 0x78,0x56,0x34,0x12, 0,0,0,0, 0,0, 6, 0x1b, 0,0,0, 2, 0,0,0,0,0,0,0,0,0,0,0 };
+    modeswitch_build_cbw(cbw, 0x12345678);
+    CHECK(!memcmp(cbw, usb_modeswitch_msg, 31));            // same bytes as usb_modeswitch's eject message (555342431234567800...061b000000020...)
+}
+
 int main(void)
 {
-    t_country(); t_profile(); t_proto(); t_backoff(); t_led();
+    t_country(); t_profile(); t_proto(); t_backoff(); t_led(); t_modeswitch();
     printf("test_awusd: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

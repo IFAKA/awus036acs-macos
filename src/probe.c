@@ -6,6 +6,7 @@
 #include <libusb.h>
 #include <stdio.h>
 #include <stdint.h>
+#include "modeswitch.h"
 
 static libusb_device_handle *h;
 
@@ -17,7 +18,10 @@ int main(void) {
     libusb_context *c;
     libusb_init(&c);
     h = libusb_open_device_with_vid_pid(c, 0x0bda, 0x0811);
-    if (!h) { fprintf(stderr, "open failed (not plugged in, or held by another driver)\n"); return 1; }
+    if (!h) {
+        if (modeswitch_scan(NULL) > 0) { fprintf(stderr, "found a Realtek stick in its fake-CD stage and sent the eject; run probe again in a few seconds\n"); return 1; }
+        fprintf(stderr, "open failed (not plugged in, or held by another driver)\n"); return 1;
+    }
     libusb_device *d = libusb_get_device(h);
     struct libusb_config_descriptor *cfg;
     libusb_get_active_config_descriptor(d, &cfg);
