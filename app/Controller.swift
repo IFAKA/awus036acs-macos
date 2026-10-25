@@ -348,8 +348,45 @@ final class Controller: NSObject, NSMenuDelegate {
         }
     }
 
-    // Hooks for the later work: set Features.wps / Features.adhoc to true in Model.swift and fill these in.
-    @objc func wpsAction() { }
+    /// WPS sheet: push button (press the router's WPS button first, then Start; you have about 2 minutes) or the router's PIN.
+    @objc func wpsAction() {
+        let mode = NSSegmentedControl(labels: ["Push button", "PIN"], trackingMode: .selectOne, target: nil, action: nil)
+        mode.selectedSegment = 0
+        let net = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24), pullsDown: false)
+        let names = Array(Set(aps.filter { !$0.ssid.isEmpty }.map { $0.ssid })).sorted()
+        net.addItems(withTitles: ["Any router with its button pressed"] + names)
+        let pin = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 22)); pin.placeholderString = "Router PIN (4 or 8 digits)"
+        let a = NSAlert(); a.messageText = "WPS"
+        a.informativeText = "Push button: press the WPS button on your router, then click Start (within 2 minutes).\nPIN: pick the router and type the PIN printed on it."
+        a.accessoryView = stack([mode, label("Network"), net, label("PIN (PIN mode only)"), pin])
+        a.addButton(withTitle: "Start"); a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        var opts: [(String, String)] = []
+        let chosen = net.indexOfSelectedItem > 0 ? net.titleOfSelectedItem : nil
+        if let c = chosen { opts.append(("ssid", c)) }
+        let isPin = mode.selectedSegment == 1
+        if isPin {
+            let p = pin.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !p.isEmpty, chosen != nil else {
+                let e = NSAlert(); e.messageText = "WPS PIN needs a network and a PIN"; e.runModal(); return
+            }
+            opts.append(("pin", p))
+        }
+        pending = "WPS: talking to the router..."
+        refreshUI()
+        request(AwusClient.line("wps", [isPin ? "pin" : "pbc"], opts), timeout: 180) { [weak self] r, _ in
+            guard let self = self else { return }
+            self.pending = nil
+            if !r.ok { self.failure("WPS failed", r) }
+            else {
+                let n = NSAlert(); n.messageText = "WPS worked"
+                n.informativeText = "Saved \"\(r.kv["ssid"] ?? "")\" (\(r.kv["security"] ?? "")). It will connect automatically."
+                NSApp.activate(ignoringOtherApps: true); n.runModal()
+            }
+            self.refreshProfiles(); self.refreshStatus()
+        }
+    }
     @objc func adhocAction() { }
 
     @objc func showStatusWindow() {

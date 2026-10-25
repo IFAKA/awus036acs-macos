@@ -3,8 +3,8 @@ import Foundation
 
 let appVersion = "0.1.0"
 
-/// Optional features that other work will wire up. Flip to true and fill in the handler in App.swift (`wps()`, `adhoc()`).
-enum Features { static let wps = false, adhoc = false }
+/// Optional features that other work will wire up. Flip to true and fill in the handler in Controller.swift (`wpsAction()`, `adhocAction()`).
+enum Features { static let wps = true, adhoc = false }
 let notBuiltYet = "not built yet"
 
 /// 0...5 bars from RSSI in dBm.

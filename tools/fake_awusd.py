@@ -144,6 +144,19 @@ def handle(line):
                 p["autojoin"] = 1 if pos[1] == "on" else 0
                 return "OK\n"
             return err("usage: profile add|list|remove|autojoin")
+        if cmd == "wps":   # wps pbc | wps pin pin=N ssid=NAME | wps reset  (canned: PIN 12345670 works, others are rejected)
+            sub = pos[0] if pos else ""
+            if sub == "reset": return "OK\n"
+            if S["rf"] == "off": return err("rf_off")
+            if sub == "pbc":
+                if opt.get("ssid") == "Locked": return err("ap_setup_locked: AP setup is locked")
+                PROFILES[:] = [q for q in PROFILES if q["ssid"] != "WpsNet"] + [dict(ssid="WpsNet", security="wpa2", key="x" * 12, hidden=0, priority=0, autojoin=1, default_route=0)]
+                return "OK\n" + kv("ssid", "WpsNet") + kv("security", "wpa2") + kv("profile", "saved") + kv("key", "set")
+            if sub == "pin":
+                if opt.get("pin") != "12345670": return err("wps failed: eap:pin_wrong cfg_error=18 (the PIN was rejected by the router)")
+                PROFILES[:] = [q for q in PROFILES if q["ssid"] != "WpsNet"] + [dict(ssid="WpsNet", security="wpa2", key="x" * 12, hidden=0, priority=0, autojoin=1, default_route=0)]
+                return "OK\n" + kv("ssid", "WpsNet") + kv("security", "wpa2") + kv("profile", "saved") + kv("key", "set")
+            return err("usage: wps pbc|pin [pin=N] [ssid=NAME | bssid=B] | wps reset")
         if cmd == "debug":
             if pos and pos[0] == "drop": S["state"] = "IDLE"; S["drops"] += 1; return "OK\n"
             if pos and pos[0] == "state" and len(pos) > 1: S["state"] = pos[1]; return "OK\n"
