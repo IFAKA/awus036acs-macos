@@ -178,3 +178,11 @@ GPL-2.0-or-later option and linked statically; no OpenSSL is included.
 Pull requests welcome, especially on the parity checklist in
 [`CONTRIBUTING.md`](CONTRIBUTING.md). This only exists because the hardware
 deserved to work without a VM — help make it work all the way.
+
+---
+
+## Support
+
+If this project is useful to you, you can support my work:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/zfaka)
